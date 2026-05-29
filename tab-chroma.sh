@@ -329,14 +329,17 @@ if not state:
     sys.exit(0)
 
 action = state.get("action", "color")
-r = state.get("r", 0)
-g = state.get("g", 0)
-b = state.get("b", 0)
+try:
+    r = int(state.get("r", 0))
+    g = int(state.get("g", 0))
+    b = int(state.get("b", 0))
+except (TypeError, ValueError):
+    r = g = b = 0
 
 if action == "reset":
-    print('ACTION="reset"')
+    print('ACTION=reset')
 else:
-    print('ACTION="color"')
+    print('ACTION=color')
     print(f'COLOR_R={r}')
     print(f'COLOR_G={g}')
     print(f'COLOR_B={b}')
@@ -383,17 +386,23 @@ cmd_test() {
   echo "testing state: $state_name (theme: $theme_name)"
   _apply_theme_state "$theme_file" "$state_name"
 
-  # Apply title and badge
+  # Apply title and badge. theme_file/state_name/project_name are passed as
+  # argv (not interpolated into the Python source) and the outputs go through
+  # shlex.quote() so the eval below cannot execute their contents.
   local project_name
   project_name="$(basename "$PWD")"
-  eval "$(python3 - << EOF
-import json
-theme = json.load(open("$theme_file"))
-state_cfg = theme.get("states", {}).get("$state_name", {})
-label = state_cfg.get("label", "$state_name")
-print(f'TITLE_TEXT="◉ $project_name: {label}"')
-print(f'BADGE_TEXT="$project_name\\\\n{label}"')
-EOF
+  eval "$(python3 - "$theme_file" "$state_name" "$project_name" << 'PYEOF'
+import json, shlex, sys
+theme_file, state_name, project_name = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    theme = json.load(open(theme_file))
+except Exception:
+    theme = {}
+state_cfg = theme.get("states", {}).get(state_name, {})
+label = str(state_cfg.get("label", state_name))
+print('TITLE_TEXT=' + shlex.quote(f"◉ {project_name}: {label}"))
+print('BADGE_TEXT=' + shlex.quote(f"{project_name}\\n{label}"))
+PYEOF
   )"
   [ -n "$TITLE_TEXT" ] && set_tab_title "$TITLE_TEXT"
   if [ -n "$BADGE_TEXT" ]; then
@@ -664,7 +673,7 @@ process_hook() {
   TAB_CHROMA_STATE="$STATE" \
   TAB_CHROMA_THEMES="$THEMES_DIR" \
   python3 - << 'PYEOF'
-import sys, json, os, time
+import sys, json, os, time, shlex
 
 input_data = os.environ.get("TAB_CHROMA_INPUT", "")
 config_path = os.environ.get("TAB_CHROMA_CONFIG", "")
@@ -782,10 +791,13 @@ if not state_config:
     sys.exit(0)
 
 action = state_config.get("action", "color")
-r = state_config.get("r", 0)
-g = state_config.get("g", 0)
-b = state_config.get("b", 0)
-label = state_config.get("label", state_name)
+try:
+    r = int(state_config.get("r", 0))
+    g = int(state_config.get("g", 0))
+    b = int(state_config.get("b", 0))
+except (TypeError, ValueError):
+    r = g = b = 0
+label = str(state_config.get("label", state_name))
 
 # --- Compute title and badge ---
 project_name = os.path.basename(cwd) if cwd else ""
@@ -803,21 +815,24 @@ if do_badge and project_name:
     badge_text = f"{project_name}\\n{label}"
 
 # --- Output bash variables ---
+# Values that originate from untrusted input (the working-directory name in
+# title_text/badge_text, the label from a theme file) are passed through
+# shlex.quote() so the eval in the calling shell cannot execute them.
 if action == "reset":
-    print('ACTION="reset"')
+    print('ACTION=reset')
 elif do_color:
-    print('ACTION="color"')
+    print('ACTION=color')
     print(f'COLOR_R={r}')
     print(f'COLOR_G={g}')
     print(f'COLOR_B={b}')
 else:
-    print('ACTION="title_only"')
+    print('ACTION=title_only')
 
-print(f'DO_TITLE="{str(do_title).lower()}"')
-print(f'DO_BADGE="{str(do_badge).lower()}"')
-print(f'TITLE_TEXT="{title_text}"')
-print(f'BADGE_TEXT="{badge_text}"')
-print(f'STATE_NAME="{state_name}"')
+print('DO_TITLE=' + ('true' if do_title else 'false'))
+print('DO_BADGE=' + ('true' if do_badge else 'false'))
+print('TITLE_TEXT=' + shlex.quote(title_text))
+print('BADGE_TEXT=' + shlex.quote(badge_text))
+print('STATE_NAME=' + shlex.quote(state_name))
 
 # --- Save state atomically ---
 state["last_state"] = state_name
