@@ -740,7 +740,10 @@ now = time.time()
 last_time = state.get("last_state_time", 0)
 last_state = state.get("last_state", "")
 debounce = config.get("debounce_seconds", 2)
-urgent = state_name in ("attention", "permission")
+# SessionEnd bypasses debounce: it maps to the session.start state, so a quick
+# SessionStart -> SessionEnd would otherwise be debounced and skip both the tab
+# reset and the session_themes pin cleanup below.
+urgent = state_name in ("attention", "permission") or event == "SessionEnd"
 
 if state_name == last_state and (now - last_time) < debounce and not urgent:
     print('ACTION="skip"')
