@@ -122,7 +122,7 @@ def read_sessions():
     try:
         # Read-only URI connection: never create or lock the DB for writers.
         con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=1.0)
-    except sqlite3.OperationalError:
+    except sqlite3.Error:
         return None
     try:
         rows = con.execute(
@@ -133,9 +133,17 @@ def read_sessions():
             "ORDER BY updated_at DESC",
             (now,),
         ).fetchall()
-    except sqlite3.OperationalError:
-        # Table may not exist yet (no hook has fired).
-        return []
+    except sqlite3.OperationalError as e:
+        # "no such table" means the registry exists but no hook has written yet
+        # — treat as idle. Other operational errors (locked, I/O) are unreadable.
+        if "no such table" in str(e).lower():
+            return []
+        return None
+    except sqlite3.DatabaseError:
+        # Corrupt / truncated / non-SQLite file → unreadable, not idle.
+        # (DatabaseError is the parent of OperationalError, so this clause must
+        # come second; "file is not a database" raises DatabaseError directly.)
+        return None
     finally:
         con.close()
     return rows
