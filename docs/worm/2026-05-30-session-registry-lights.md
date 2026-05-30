@@ -159,3 +159,42 @@ Net effect: Phase 1 (registry writer) is unblocked. The one thing to verify
 during Phase 1 is whether the Codex `session_id` is stable across a session's
 hook events, which determines whether the composite fallback key is needed.
 
+---
+
+## 2026-05-30 — Phase 1 implemented
+
+Implemented the registry writer inline in `tab-chroma.sh`:
+
+- `REGISTRY_DB` (Application Support, `TAB_CHROMA_REGISTRY_DB` override). The
+  hook's existing single `python3` block now upserts a `sessions` row at the
+  end, fully wrapped in `try/except` with no stdout, so it can never break the
+  hook. TTL backstops: working/permission/attention 2h, done 12h, starting
+  10min, ended (SessionEnd afterglow) 60s; expired rows pruned on each write.
+- Installer tags hook commands with `TAB_CHROMA_AGENT=claude`/`=codex`; reinstall
+  upgrades old untagged entries and de-dupes (collapse-to-one logic). Uninstall
+  needle-matching still removes the tagged commands; uninstall now leaves the
+  shared registry in place and prints how to remove it.
+- Added `tab-chroma sessions [list|prune|clear|path]`.
+
+Two lessons recorded for future work:
+
+1. **bash 3.2 command-substitution apostrophe bug.** The hook's Python lives
+   inside `eval "$(... python3 - << 'PYEOF' ... )"`. macOS `/bin/bash` (3.2)
+   naively counts apostrophes across the heredoc body when scanning `$(...)`, so
+   an *odd* number of stray apostrophes (e.g. a contraction in a comment) yields
+   an "unexpected EOF" parse failure at runtime — even though `bash -n` under
+   bash 5 reports OK. Rule: avoid lone apostrophes inside that block and always
+   syntax-check with `/bin/bash -n`, not just `bash -n`.
+2. **`uninstall` deletes `DATA_DIR`, which defaults to the repo.** In a plain
+   git checkout `DATA_DIR == SCRIPT_DIR == repo`, so running `tab-chroma
+   uninstall` from the dev tree `rm -rf`'d the working copy. This is correct
+   behavior for a real self-contained install, but a dangerous footgun in dev.
+   Recovered by re-cloning from `origin` (design commits were pushed) and
+   re-applying the uncommitted Phase 1 edits. Rule: only ever exercise
+   install/uninstall with `TAB_CHROMA_DATA` pointed at a throwaway dir.
+
+Validated under `/bin/bash 3.2`: hook simulation across all states, SessionEnd
+afterglow + prune-on-write, TTL values, installer upgrade/idempotency/no-dupes,
+and the `sessions` CLI. Codex `session_id` stability against real payloads is
+still the open item to confirm before relying on the non-composite key.
+

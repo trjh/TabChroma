@@ -2,10 +2,10 @@
 
 ## Status
 
-- **Status:** Design, decisions resolved 2026-05-30, on branch `design/session-registry-lights`.
+- **Status:** Phase 1 (registry writer) implemented 2026-05-30, on branch `design/session-registry-lights`.
 - **Storage:** SQLite (see [Recommendation](#recommendation)).
 - **DB location:** `~/Library/Application Support/TabChroma/sessions.sqlite3` (resolved 2026-05-30).
-- **Next step:** Phase 1 (registry writer) — not yet started.
+- **Next step:** Phase 2 (SwiftBar/xbar reader). Validate Codex `session_id` stability against real payloads.
 
 See also: `docs/worm/2026-05-30-session-registry-lights.md` for the append-only discussion log that led to this design.
 
@@ -457,16 +457,31 @@ Open questions:
 - Add this design doc.
 - Push branch for parallel work.
 
-### Phase 1: registry writer
+### Phase 1: registry writer — DONE (2026-05-30)
 
-- Add a small Python helper, e.g. `scripts/tab_chroma_registry.py` or inline function in `tab-chroma.sh`.
-- Create/open the SQLite DB at the resolved registry path
-  (`~/Library/Application Support/TabChroma/sessions.sqlite3`, overridable via
-  `TAB_CHROMA_REGISTRY_DB`), `mkdir -p`-ing the registry directory on first use.
-  This is the Application Support path, **not** `DATA_DIR`.
-- On each resolved hook event, upsert session row with agent, session id, state, cwd, project label, theme, RGB, and TTL.
-- Prune expired sessions during writes.
-- Keep registry update best-effort and silent in hook mode.
+Implemented inline in `tab-chroma.sh` (no separate helper, matching the install
+model that ships only `tab-chroma.sh`/themes/completions/VERSION):
+
+- ✅ `REGISTRY_DB` resolves to the Application Support path, overridable via
+  `TAB_CHROMA_REGISTRY_DB`; the writer `mkdir -p`s the directory on first use.
+  Not `DATA_DIR`.
+- ✅ The hook's existing single `python3` block upserts a session row (agent,
+  session id, state, cwd, project label, theme, RGB, TTL) at the end, after the
+  `.state.json` save. The whole registry section is wrapped in `try/except` and
+  writes nothing to stdout, so a registry failure can never break the hook.
+- ✅ Registry state + fallback TTL: `working/permission/attention` 2h,
+  `done` 12h, `session.start` ("starting") 10min, `SessionEnd` ("ended") 60s
+  afterglow. Expired rows are pruned on every write.
+- ✅ Agent identity: installer tags hook commands with `TAB_CHROMA_AGENT=claude`
+  / `=codex`; reinstall upgrades old untagged entries and de-dupes. Writer
+  defaults to `claude` when the env var is absent (old installs).
+- ✅ `tab-chroma sessions [list|prune|clear|path]` CLI for inspection.
+- ✅ Uninstall leaves the shared registry in place (it is outside `DATA_DIR`) and
+  prints how to remove it manually.
+- Validated under `/bin/bash 3.2` (the runtime shell): hook simulation,
+  afterglow + prune-on-write, TTLs, installer upgrade/idempotency, and the
+  `sessions` CLI. (Note: `bash -n` under bash 5 does NOT catch the bash-3.2
+  command-substitution apostrophe bug — always syntax-check with `/bin/bash`.)
 
 ### Phase 2: SwiftBar/xbar plugin
 

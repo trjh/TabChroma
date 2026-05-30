@@ -16,6 +16,14 @@ DATA_DIR="${TAB_CHROMA_DATA:-$SCRIPT_DIR}"
 CONFIG="$DATA_DIR/config.json"
 STATE="$DATA_DIR/.state.json"
 PAUSED="$DATA_DIR/.paused"
+
+# Shared cross-agent session registry (SQLite), read by menu-bar UIs that show
+# one light per active Claude/Codex session. It lives OUTSIDE DATA_DIR on
+# purpose: it is cross-session state shared by both agents, so it must survive a
+# plugin reinstall/uninstall and not be nested under a Claude-specific path.
+# Override with TAB_CHROMA_REGISTRY_DB (used by tests, like TAB_CHROMA_DATA).
+REGISTRY_DB="${TAB_CHROMA_REGISTRY_DB:-$HOME/Library/Application Support/TabChroma/sessions.sqlite3}"
+
 THEMES_DIR="$SHARE_DIR/themes"
 VERSION_FILE="$SHARE_DIR/VERSION"
 
@@ -174,6 +182,12 @@ TESTING:
   test <state>          Manually trigger a state
                         States: working done attention permission session.start
   reset                 Reset tab to default color
+
+SESSIONS:
+  sessions list         Show active agent sessions in the shared registry
+  sessions prune        Remove expired sessions
+  sessions clear        Remove all sessions
+  sessions path         Print the registry database path
 
 INFO:
   help                  Show this help
@@ -467,11 +481,11 @@ cmd_install() {
     echo '{}' > "$settings"
   fi
 
-  python3 - "$settings" "$hook_cmd" $events << 'PYEOF'
+  python3 - "$settings" "$hook_cmd" "TAB_CHROMA_AGENT=claude $hook_cmd" $events << 'PYEOF'
 import json, sys
 
-settings_path, hook_cmd = sys.argv[1], sys.argv[2]
-events = sys.argv[3:]
+settings_path, needle, desired = sys.argv[1], sys.argv[2], sys.argv[3]
+events = sys.argv[4:]
 
 with open(settings_path) as f:
     cfg = json.load(f)
@@ -485,11 +499,16 @@ for event in events:
     if catch_all is None:
         catch_all = {"matcher": "", "hooks": []}
         matchers.append(catch_all)
-    hook_entry = {"type": "command", "command": hook_cmd}
-    existing = [h for h in catch_all["hooks"] if h.get("command") == hook_cmd]
-    if not existing:
-        catch_all["hooks"].append(hook_entry)
+    hooks = catch_all.setdefault("hooks", [])
+    # Collapse any prior tab-chroma entry (plain OR agent-prefixed) down to the
+    # single desired command, so reinstalling upgrades old plain entries to the
+    # agent-tagged form without duplicating.
+    tc = [h for h in hooks if needle in h.get("command", "")]
+    non_tc = [h for h in hooks if needle not in h.get("command", "")]
+    already_current = len(tc) == 1 and tc[0].get("command") == desired
+    if not already_current:
         changed = True
+    catch_all["hooks"] = non_tc + [{"type": "command", "command": desired}]
 
 with open(settings_path, "w") as f:
     json.dump(cfg, f, indent=2)
@@ -507,11 +526,11 @@ PYEOF
       echo '{"hooks":{}}' > "$codex_hooks"
     fi
 
-    python3 - "$codex_hooks" "$hook_cmd" $codex_events << 'PYEOF'
+    python3 - "$codex_hooks" "$hook_cmd" "TAB_CHROMA_AGENT=codex $hook_cmd" $codex_events << 'PYEOF'
 import json, sys
 
-hooks_path, hook_cmd = sys.argv[1], sys.argv[2]
-events = sys.argv[3:]
+hooks_path, needle, desired = sys.argv[1], sys.argv[2], sys.argv[3]
+events = sys.argv[4:]
 
 try:
     with open(hooks_path) as f:
@@ -527,10 +546,15 @@ for event in events:
     if catch_all is None:
         catch_all = {"matcher": "", "hooks": []}
         matchers.append(catch_all)
-    hook_entry = {"type": "command", "command": hook_cmd}
-    if not any(h.get("command") == hook_cmd for h in catch_all.get("hooks", [])):
-        catch_all.setdefault("hooks", []).append(hook_entry)
+    hooks = catch_all.setdefault("hooks", [])
+    # Collapse any prior tab-chroma entry to the single desired (agent-tagged)
+    # command, upgrading old plain entries without duplicating.
+    tc = [h for h in hooks if needle in h.get("command", "")]
+    non_tc = [h for h in hooks if needle not in h.get("command", "")]
+    already_current = len(tc) == 1 and tc[0].get("command") == desired
+    if not already_current:
         changed = True
+    catch_all["hooks"] = non_tc + [{"type": "command", "command": desired}]
 
 tmp = hooks_path + ".tmp"
 with open(tmp, "w") as f:
@@ -695,6 +719,12 @@ PYEOF
     echo "Removing data dir $DATA_DIR..."
     rm -rf "$DATA_DIR"
   fi
+  # The shared session registry lives outside DATA_DIR and may still be used by
+  # a sibling agent install, so it is intentionally left in place.
+  if [ -f "$REGISTRY_DB" ]; then
+    echo "Leaving shared session registry: $REGISTRY_DB"
+    echo "  (remove it manually with: rm -f '$REGISTRY_DB'*)"
+  fi
   # Remove the install dir only for a self-contained git/curl install. For a
   # Homebrew install the script lives in a brew-managed share dir, so leave it
   # to `brew uninstall`.
@@ -741,6 +771,64 @@ EOF
 
 # ─── CLI Routing ───────────────────────────────────────────────────────────────
 
+cmd_sessions() {
+  local sub="${1:-list}"
+  shift || true
+  case "$sub" in
+    path)
+      echo "$REGISTRY_DB"
+      ;;
+    list|prune|clear)
+      TAB_CHROMA_REGISTRY_DB="$REGISTRY_DB" python3 - "$sub" << 'PYEOF'
+import os, sys, time
+sub = sys.argv[1]
+db = os.environ.get("TAB_CHROMA_REGISTRY_DB", "")
+if not db or not os.path.exists(db):
+    print("No session registry yet (no agent sessions recorded).")
+    sys.exit(0)
+import sqlite3
+now = int(time.time())
+con = sqlite3.connect(db, timeout=1.0)
+try:
+    con.execute("PRAGMA busy_timeout=1000")
+    if sub == "clear":
+        n = con.execute("DELETE FROM sessions").rowcount
+        con.commit()
+        print(f"Cleared {n} session(s).")
+    elif sub == "prune":
+        n = con.execute(
+            "DELETE FROM sessions WHERE expires_at IS NOT NULL AND expires_at < ?",
+            (now,)).rowcount
+        con.commit()
+        print(f"Pruned {n} expired session(s).")
+    else:  # list — active (unexpired) sessions only
+        rows = con.execute(
+            "SELECT agent, state, label, cwd, updated_at FROM sessions "
+            "WHERE expires_at IS NULL OR expires_at >= ? "
+            "ORDER BY updated_at DESC", (now,)).fetchall()
+        if not rows:
+            print("No active sessions.")
+            sys.exit(0)
+        print(f"{'AGENT':<7} {'STATE':<10} {'LABEL':<18} {'AGE':<6} CWD")
+        for agent, state, label, cwd, upd in rows:
+            age = now - (upd or now)
+            age_s = f"{age}s" if age < 60 else (f"{age//60}m" if age < 3600 else f"{age//3600}h")
+            print(f"{agent:<7} {state:<10} {(label or ''):<18} {age_s:<6} {cwd or ''}")
+except sqlite3.OperationalError as e:
+    print(f"registry error: {e}", file=sys.stderr)
+    sys.exit(1)
+finally:
+    con.close()
+PYEOF
+      ;;
+    *)
+      echo "unknown sessions subcommand: $sub" >&2
+      echo "usage: tab-chroma sessions [list|prune|clear|path]" >&2
+      return 1
+      ;;
+  esac
+}
+
 route_cli() {
   local cmd="$1"
   shift || true
@@ -771,6 +859,8 @@ route_cli() {
     color) cmd_feature_toggle "color" "$@";;
 
     test) cmd_test "$@";;
+
+    sessions) cmd_sessions "$@";;
 
     install)   cmd_install;;
     uninstall) cmd_uninstall;;
@@ -808,6 +898,8 @@ process_hook() {
   TAB_CHROMA_CONFIG="$CONFIG" \
   TAB_CHROMA_STATE="$STATE" \
   TAB_CHROMA_THEMES="$THEMES_DIR" \
+  TAB_CHROMA_AGENT="${TAB_CHROMA_AGENT:-}" \
+  TAB_CHROMA_REGISTRY_DB="$REGISTRY_DB" \
   python3 - << 'PYEOF'
 import sys, json, os, time, shlex
 
@@ -995,6 +1087,79 @@ tmp_path = state_path + ".tmp"
 with open(tmp_path, "w") as f:
     json.dump(state, f)
 os.replace(tmp_path, state_path)
+
+# --- Shared session registry (best-effort) ---
+# Records one row per live agent session for menu-bar UIs. This is wrapped so a
+# registry failure (locked DB, missing dir, no sqlite3) can NEVER break the
+# hook: nothing here writes to stdout, and any exception is swallowed.
+try:
+    import sqlite3
+    db_path = os.environ.get("TAB_CHROMA_REGISTRY_DB", "")
+    if db_path:
+        agent = (os.environ.get("TAB_CHROMA_AGENT") or "").strip() or "claude"
+        terminal = os.environ.get("ITERM_SESSION_ID") or os.environ.get("TERM_SESSION_ID") or ""
+
+        # Stable per-session key; fall back to a composite when no session id.
+        if session_id:
+            session_key = f"{agent}:{session_id}"
+        else:
+            session_key = f"{agent}:{cwd}:{terminal}"
+
+        # Registry state + fallback TTL backstop (seconds). The TTL is only a
+        # safety net for sessions that die without a clean end; deterministic
+        # signals (SessionEnd, next state change) are the real lifecycle.
+        now_i = int(now)
+        if event == "SessionEnd":
+            reg_state, ttl = "ended", 60                 # ~60s afterglow, then pruned
+        elif state_name == "session.start":
+            reg_state, ttl = "starting", 600             # 10 min if no activity follows
+        elif state_name == "done":
+            reg_state, ttl = "done", 12 * 3600           # green until exit; 12h backstop
+        else:
+            reg_state, ttl = state_name, 2 * 3600        # working/permission/attention
+        expires_at = now_i + ttl
+
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        con = sqlite3.connect(db_path, timeout=0.25)
+        try:
+            con.execute("PRAGMA journal_mode=WAL")
+            con.execute("PRAGMA busy_timeout=250")
+            con.execute("PRAGMA synchronous=NORMAL")
+            con.execute("""CREATE TABLE IF NOT EXISTS sessions (
+                session_key TEXT PRIMARY KEY,
+                agent TEXT NOT NULL,
+                agent_session_id TEXT,
+                state TEXT NOT NULL,
+                label TEXT,
+                cwd TEXT,
+                terminal TEXT,
+                theme TEXT,
+                color_r INTEGER, color_g INTEGER, color_b INTEGER,
+                started_at INTEGER,
+                updated_at INTEGER NOT NULL,
+                expires_at INTEGER,
+                metadata_json TEXT)""")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at)")
+            con.execute("BEGIN IMMEDIATE")
+            # started_at is intentionally NOT in the UPDATE set, so it is kept
+            # from the original INSERT across the whole session lifetime.
+            con.execute("""INSERT INTO sessions
+                (session_key, agent, agent_session_id, state, label, cwd, terminal,
+                 theme, color_r, color_g, color_b, started_at, updated_at, expires_at, metadata_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(session_key) DO UPDATE SET
+                  state=excluded.state, label=excluded.label, cwd=excluded.cwd,
+                  terminal=excluded.terminal, theme=excluded.theme,
+                  color_r=excluded.color_r, color_g=excluded.color_g, color_b=excluded.color_b,
+                  updated_at=excluded.updated_at, expires_at=excluded.expires_at""",
+                (session_key, agent, session_id, reg_state, project_name or label, cwd,
+                 terminal, theme_name, r, g, b, now_i, now_i, expires_at, None))
+            con.execute("DELETE FROM sessions WHERE expires_at IS NOT NULL AND expires_at < ?", (now_i,))
+            con.commit()
+        finally:
+            con.close()
+except Exception:
+    pass
 
 PYEOF
   )"
