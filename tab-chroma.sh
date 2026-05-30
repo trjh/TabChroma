@@ -41,16 +41,39 @@ detect_terminal() {
 
 TERMINAL="$(detect_terminal)"
 
+# ─── Terminal Device Resolution ──────────────────────────────────────────────
+# Claude Code runs hooks with no controlling terminal, so /dev/tty is not
+# available in the hook process (open fails with "device not configured").
+# Walk up the process tree to the nearest ancestor that owns a real tty — the
+# iTerm2 session — and target its device node directly. Same user owns that
+# pts, so it is writable. Falls back to /dev/tty for the normal interactive
+# CLI case (where $$ already has a controlling terminal on the first hop).
+resolve_terminal_device() {
+  local pid=$$ tt i=0
+  while [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$pid" != "1" ] && [ "$i" -lt 12 ]; do
+    tt="$(ps -o tty= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+    if [ -n "$tt" ] && [ "$tt" != "??" ] && [ -w "/dev/$tt" ]; then
+      printf '/dev/%s' "$tt"
+      return 0
+    fi
+    pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+    i=$((i + 1))
+  done
+  printf '/dev/tty'
+}
+
+TTY_DEVICE="$(resolve_terminal_device)"
+
 # ─── iTerm2 Output Functions ───────────────────────────────────────────────────
 
 set_tab_color() {
   local r=$1 g=$2 b=$3
   { printf '\033]6;1;bg;red;brightness;%s\a\033]6;1;bg;green;brightness;%s\a\033]6;1;bg;blue;brightness;%s\a' \
-    "$r" "$g" "$b" > /dev/tty; } 2>/dev/null
+    "$r" "$g" "$b" > "$TTY_DEVICE"; } 2>/dev/null
 }
 
 reset_tab_color() {
-  { printf '\033]6;1;bg;*;default\a' > /dev/tty; } 2>/dev/null
+  { printf '\033]6;1;bg;*;default\a' > "$TTY_DEVICE"; } 2>/dev/null
 }
 
 set_badge_color() {
@@ -58,20 +81,20 @@ set_badge_color() {
   if [ "$TERMINAL" = "iterm2" ]; then
     local hex
     hex="$(printf '%02x%02x%02x' "$r" "$g" "$b")"
-    { printf '\033]1337;SetColors=badge=%s\a' "$hex" > /dev/tty; } 2>/dev/null
+    { printf '\033]1337;SetColors=badge=%s\a' "$hex" > "$TTY_DEVICE"; } 2>/dev/null
   fi
 }
 
 reset_badge_color() {
   if [ "$TERMINAL" = "iterm2" ]; then
-    { printf '\033]1337;SetColors=badge=default\a' > /dev/tty; } 2>/dev/null
+    { printf '\033]1337;SetColors=badge=default\a' > "$TTY_DEVICE"; } 2>/dev/null
   fi
 }
 
 set_tab_title() {
   local title="$1"
   if [ "$TERMINAL" = "iterm2" ] || [ "$TERMINAL" = "apple-terminal" ]; then
-    { printf '\033]0;%s\007' "$title" > /dev/tty; } 2>/dev/null
+    { printf '\033]0;%s\007' "$title" > "$TTY_DEVICE"; } 2>/dev/null
   fi
 }
 
@@ -79,9 +102,9 @@ set_badge() {
   local text="$1"
   if [ "$TERMINAL" = "iterm2" ]; then
     if [ -z "$text" ]; then
-      { printf '\033]1337;SetBadgeFormat=\a' > /dev/tty; } 2>/dev/null
+      { printf '\033]1337;SetBadgeFormat=\a' > "$TTY_DEVICE"; } 2>/dev/null
     else
-      { printf '\033]1337;SetBadgeFormat=%s\a' "$(printf '%s' "$text" | base64)" > /dev/tty; } 2>/dev/null
+      { printf '\033]1337;SetBadgeFormat=%s\a' "$(printf '%s' "$text" | base64)" > "$TTY_DEVICE"; } 2>/dev/null
     fi
   fi
 }
@@ -557,8 +580,8 @@ else:
 PYEOF
 
   if [ "$TERM_PROGRAM" = "iTerm.app" ]; then
-    printf '\033]6;1;bg;*;default\a' > /dev/tty
-    printf '\033]1337;SetBadgeFormat=\a' > /dev/tty
+    printf '\033]6;1;bg;*;default\a' > "$TTY_DEVICE"
+    printf '\033]1337;SetBadgeFormat=\a' > "$TTY_DEVICE"
     echo "Tab color reset and badge cleared."
   fi
 
