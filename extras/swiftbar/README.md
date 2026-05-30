@@ -36,24 +36,31 @@ prune expired sessions, clear the registry, and open the registry folder.
 
 ## Install
 
-Symlink (so updates to the repo copy are picked up automatically) the plugin
-into your SwiftBar/xbar plugin folder:
+**Copy** the plugin into your SwiftBar/xbar plugin folder (find the exact path
+in SwiftBar Preferences → "Plugin Folder", or xbar preferences):
 
 ```bash
-# SwiftBar: Preferences → "Plugin Folder" shows the path; commonly:
-ln -s "$PWD/extras/swiftbar/tab-chroma-sessions.1s.py" \
+# SwiftBar (adjust the destination to your configured Plugin Folder):
+cp extras/swiftbar/tab-chroma-sessions.1s.py \
   ~/Library/Application\ Support/SwiftBar/Plugins/
-
-# xbar: plugin folder is set in xbar preferences, commonly:
-ln -s "$PWD/extras/swiftbar/tab-chroma-sessions.1s.py" \
-  ~/Library/Application\ Support/xbar/plugins/
+chmod +x ~/Library/Application\ Support/SwiftBar/Plugins/tab-chroma-sessions.1s.py
 ```
 
-Then refresh plugins in SwiftBar/xbar (or just relaunch it). The light appears
-in the menu bar within ~1 second.
+Then **fully quit and relaunch** SwiftBar (or xbar) so it rescans the folder.
+The light appears in the menu bar within ~1 second.
+
+> **Why copy, not symlink?** SwiftBar does not reliably pick up *symlinked*
+> plugins — a symlink may be silently skipped until you fully relaunch SwiftBar,
+> and on some versions never loads. A plain copy always works. The tradeoff is
+> that you must re-copy the file after pulling repo updates.
+
+If the light never shows up even though `./tab-chroma-sessions.1s.py` prints
+output in a terminal, the usual cause is a **full menu bar** hiding the icon
+under the notch — make room (or use a menu-bar manager like Ice/Bartender) and
+relaunch SwiftBar.
 
 The `.1s.py` in the filename is the **refresh interval** (1 second). To poll
-less often, copy/rename it, e.g. `tab-chroma-sessions.2s.py` or `.5s.py`.
+less often, rename the copy, e.g. `tab-chroma-sessions.2s.py` or `.5s.py`.
 
 ## Configuration
 
@@ -63,7 +70,8 @@ environment, or export them where SwiftBar can see them):
 | Variable | Default | Purpose |
 |---|---|---|
 | `TAB_CHROMA_REGISTRY_DB` | `~/Library/Application Support/TabChroma/sessions.sqlite3` | Registry database path (must match the writer). |
-| `TAB_CHROMA_LIGHTS_COLLAPSE` | `8` | Above this many sessions, collapse the menu bar to grouped counts (`C🔵×5 X🔴×2`); the dropdown still lists each session. `0` disables collapsing. |
+| `TAB_CHROMA_LIGHTS_AGENT_PREFIX` | `off` | Prefix each circle with the agent letter (`C`=Claude, `X`=Codex), e.g. `C🔵 X🟢`. Off by default (just circles). Set to `1`/`true`/`yes`/`on` to enable. |
+| `TAB_CHROMA_LIGHTS_COLLAPSE` | `8` | Above this many sessions, collapse the menu bar to grouped counts (`🔵×5 🔴×2`, or `C🔵×5 X🔴×2` with the agent prefix on); the dropdown still lists each session. `0` disables collapsing. |
 | `TAB_CHROMA_BIN` | auto-detected | Path to `tab-chroma.sh` used by the Prune/Clear actions. Auto-detected from `~/.claude/hooks/tab-chroma/tab-chroma.sh` or `PATH`; if not found, those actions are hidden. |
 
 ## Notes

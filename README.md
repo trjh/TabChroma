@@ -199,8 +199,12 @@ so a menu-bar app can show **one status light per session** — handy when you
 have many agents running across tabs and windows:
 
 ```
-C🔵 C🟢 X🔴      C = Claude, X = Codex   (blue working · green done · orange attention · red permission)
+🔵 🟢 🔴      blue working · green done · orange attention · red permission
 ```
+
+By default each session is just a colored circle; set
+`TAB_CHROMA_LIGHTS_AGENT_PREFIX=on` to prefix the agent letter (`C🔵 X🟢`,
+C=Claude, X=Codex). The dropdown always names the agent per session.
 
 Inspect the registry from the CLI:
 

@@ -36,6 +36,12 @@ try:
 except ValueError:
     COLLAPSE_THRESHOLD = 8
 
+# When enabled, prefix each menu-bar circle with the agent letter (C=Claude,
+# X=Codex), e.g. "C🔵 X🟢" instead of "🔵 🟢". Off by default — just circles.
+SHOW_AGENT_PREFIX = os.environ.get("TAB_CHROMA_LIGHTS_AGENT_PREFIX", "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+
 # State -> menu-bar emoji. Matches TabChroma's semantic colors:
 # working=blue, done=green, attention=orange, permission=red. The lifecycle-only
 # states get neutral glyphs: starting=white, ended (afterglow)=black.
@@ -155,23 +161,42 @@ def sort_key(row):
 
 
 def render_menu_bar(rows):
-    """Build the single menu-bar line (before the first '---')."""
+    """Build the single menu-bar line (before the first '---').
+
+    The menu bar shows one colored circle per session (most urgent first); the
+    agent (Claude/Codex) is not encoded here — it is named in the dropdown.
+    """
     if not rows:
         # Idle: keep a subtle, present indicator so the item stays clickable.
         return "○ | color=#888888"
 
-    ordered = sorted(rows, key=sort_key)
-    if COLLAPSE_THRESHOLD and len(ordered) > COLLAPSE_THRESHOLD:
-        # Collapse: group by (agent, state) with a ×count, preserving order.
-        groups = []  # list of [agent, state, count]
-        for agent, state in ((r[0], r[1]) for r in ordered):
-            if groups and groups[-1][0] == agent and groups[-1][1] == state:
-                groups[-1][2] += 1
-            else:
-                groups.append([agent, state, 1])
-        tokens = [f"{agent_prefix(a)}{emoji(s)}×{n}" for a, s, n in groups]
+    collapsed = bool(COLLAPSE_THRESHOLD) and len(rows) > COLLAPSE_THRESHOLD
+
+    if SHOW_AGENT_PREFIX:
+        # Agent-prefixed: group by agent, then severity, then recency.
+        ordered = sorted(rows, key=sort_key)
+        if collapsed:
+            # One ×count per (agent, state) run.
+            groups = []  # [agent, state, count]
+            for agent, state in ((r[0], r[1]) for r in ordered):
+                if groups and groups[-1][0] == agent and groups[-1][1] == state:
+                    groups[-1][2] += 1
+                else:
+                    groups.append([agent, state, 1])
+            tokens = [f"{agent_prefix(a)}{emoji(s)}×{n}" for a, s, n in groups]
+        else:
+            tokens = [f"{agent_prefix(r[0])}{emoji(r[1])}" for r in ordered]
     else:
-        tokens = [f"{agent_prefix(r[0])}{emoji(r[1])}" for r in ordered]
+        # Circles only: most-urgent state first, then most-recently-updated.
+        ordered = sorted(rows, key=lambda r: (STATE_ORDER.get(r[1], 99), -(r[8] or 0)))
+        if collapsed:
+            counts = {}
+            for r in ordered:
+                counts[r[1]] = counts.get(r[1], 0) + 1
+            states = sorted(counts, key=lambda s: STATE_ORDER.get(s, 99))
+            tokens = [f"{emoji(s)}×{counts[s]}" for s in states]
+        else:
+            tokens = [emoji(r[1]) for r in ordered]
     return " ".join(tokens)
 
 
