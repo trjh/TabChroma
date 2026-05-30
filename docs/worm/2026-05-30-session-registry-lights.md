@@ -197,3 +197,32 @@ Validated under `/bin/bash 3.2`: hook simulation across all states, SessionEnd
 afterglow + prune-on-write, TTL values, installer upgrade/idempotency/no-dupes,
 and the `sessions` CLI. Codex `session_id` stability against real payloads is
 still the open item to confirm before relying on the non-composite key.
+
+PR #6 (design + Phase 1) was reviewed (Codex reviewer tab via `.context`
+handoffs), fixed across two cycles (whitespace, basename-only registry path,
+doc reconcile), passed review, and merged to `main`.
+
+---
+
+## 2026-05-30 — Phase 2 implemented (SwiftBar/xbar reader)
+
+On branch `phase2/swiftbar-session-lights`. Added a menu-bar reader:
+
+- `extras/swiftbar/tab-chroma-sessions.1s.py` and `extras/swiftbar/README.md`.
+- Reads the registry **read-only** (`file:...?mode=ro`), so it never creates,
+  writes, or locks the DB — it cannot race the hook writers. Filters to
+  unexpired rows (the reader does not prune; writers do).
+- One light per session: `C🔵 C🟢 X🔴` (C=Claude, X=Codex), state→emoji matching
+  the semantic colors. Collapses past `TAB_CHROMA_LIGHTS_COLLAPSE` (default 8)
+  into grouped counts; dropdown always lists each session, colored with the
+  exact theme RGB stored in the registry.
+- Dropdown actions: Refresh, Prune expired, Clear all (via auto-detected
+  `tab-chroma` binary), Open registry folder. Idle → dim `○`; unreadable DB →
+  `⚠️`. Dynamic values are sanitized so a `|`/newline in a path or label cannot
+  corrupt a menu row.
+- Validated against a populated temp registry: idle, multi-session ordering,
+  collapse, RGB coloring, and `|`-sanitization.
+
+This is where storing RGB in the registry (a Phase 0 decision) paid off: the
+reader colors each dropdown row to the active theme with zero theme-resolution
+logic of its own.
