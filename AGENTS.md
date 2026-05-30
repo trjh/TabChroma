@@ -40,6 +40,6 @@ Visual commands such as `tab-chroma test working` must be run from an actual iTe
 ## Style notes
 
 - Keep `tab-chroma.sh` POSIX-ish Bash; Bash-specific syntax is acceptable because the shebang is Bash.
-- Keep hook stdout quiet. Hook runners consume stdout, so visual escape sequences must continue writing to `/dev/tty`.
+- Keep hook stdout quiet. Hook runners consume stdout, so visual escape sequences must continue writing to the resolved `$TTY_DEVICE` instead of stdout.
 - Quote or `shlex.quote` any values derived from hook JSON before feeding them into shell `eval`.
 - Avoid adding dependencies beyond Bash, Python 3 standard library, and macOS/iTerm2 behavior already used by the project.

@@ -215,6 +215,8 @@ tab-chroma registers itself as a Claude Code hook and a Codex lifecycle hook. Th
 - `Stop` → done
 - `PermissionRequest` → permission
 
+Codex does not currently emit a `Notification` hook, so the orange `attention` state is Claude Code-only.
+
 Codex may ask you to trust newly discovered hooks the first time it sees them.
 
 ### Debouncing
@@ -229,7 +231,7 @@ When the agent needs to use a restricted tool, `PermissionRequest` fires and the
 
 ### Implementation notes
 
-All escape sequences write to `/dev/tty` (not stdout) so the hook runner isn't affected. JSON parsing, debouncing, and theme resolution all run in a single `python3` invocation per hook event to minimize subprocess overhead.
+All escape sequences write to the resolved terminal device (not stdout) so the hook runner isn't affected. JSON parsing, debouncing, and theme resolution all run in a single `python3` invocation per hook event to minimize subprocess overhead.
 
 ## Uninstalling
 
