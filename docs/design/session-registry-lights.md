@@ -2,9 +2,23 @@
 
 ## Status
 
-Draft design, created 2026-05-30 on branch `design/session-registry-lights`.
+- **Status:** Design, decisions resolved 2026-05-30, on branch `design/session-registry-lights`.
+- **Storage:** SQLite (see [Recommendation](#recommendation)).
+- **DB location:** `~/Library/Application Support/TabChroma/sessions.sqlite3` (resolved 2026-05-30).
+- **Next step:** Phase 1 (registry writer) — not yet started.
 
 See also: `docs/worm/2026-05-30-session-registry-lights.md` for the append-only discussion log that led to this design.
+
+### Resolved decisions (2026-05-30)
+
+| Question | Decision |
+|---|---|
+| Registry storage | SQLite, standard-library `sqlite3` |
+| DB location | `~/Library/Application Support/TabChroma/` (app-neutral, survives reinstall, shared across Claude + Codex) |
+| `done` visibility | Stay green **until the terminal/session exits**; a fallback TTL is the backstop (exact for Claude via `SessionEnd`, TTL-governed for Codex) |
+| Explicit session end | **Brief afterglow** (~60s neutral/green) then prune |
+| Codex session-end signal | **None available** — the installer registers no `SessionEnd` hook for Codex, so Codex sessions rely on the fallback TTL backstop |
+| Menu bar crowding | **Collapse past a threshold** (group like states, full detail in dropdown) |
 
 ## Goals
 
@@ -177,6 +191,24 @@ Use **SQLite** for the session registry.
 
 Rationale: hooks can fire in parallel across multiple Claude/Codex sessions, and concurrent updates are the primary correctness risk. SQLite's transaction and locking behavior directly solves that risk while staying within the existing Python 3 standard-library requirement for writers. A SwiftBar/xbar reader can use `python3 -c` or a bundled helper script if the `sqlite3` CLI is unavailable.
 
+**Resolved location (2026-05-30):** the DB lives at
+`~/Library/Application Support/TabChroma/sessions.sqlite3`, **not** under
+`DATA_DIR` (`~/.claude/hooks/tab-chroma/`). Reasons:
+
+- It is shared across both Claude and Codex installs rather than nested under a
+  Claude-specific path.
+- It survives a plugin reinstall/uninstall — the registry is cross-session
+  state, not per-install config, so `cmd_uninstall`'s `rm -rf "$DATA_DIR"`
+  should not take it down with it.
+- It is the conventional macOS location for app-private data a UI also reads.
+
+Implementation note: the writer must `mkdir -p` the Application Support
+directory on first use (it will not exist on a fresh machine), and the
+uninstaller should offer to remove it separately from `DATA_DIR` rather than
+deleting it implicitly. Define a dedicated `REGISTRY_DIR` /`REGISTRY_DB`
+overridable via env (e.g. `TAB_CHROMA_REGISTRY_DB`) so tests can redirect it the
+way `TAB_CHROMA_DATA` already redirects `DATA_DIR`.
+
 ## Session identity
 
 The registry needs a stable key per live session.
@@ -218,6 +250,26 @@ First pass detection options:
 
 Recommendation: use explicit `TAB_CHROMA_AGENT` in installed hook commands for new installs, while retaining inference/fallback for existing installs.
 
+### Registered events differ between agents
+
+The installer (`tab-chroma.sh`) registers different event sets per agent:
+
+- **Claude** (`tab-chroma.sh:462`): `SessionStart SessionEnd UserPromptSubmit
+  PreToolUse PostToolUse Stop Notification PermissionRequest`
+- **Codex** (`tab-chroma.sh:463`): `SessionStart UserPromptSubmit PreToolUse
+  PostToolUse Stop PermissionRequest`
+
+Two consequences for the registry:
+
+1. **No `SessionEnd` for Codex.** Claude can prune a session deterministically on
+   exit; Codex cannot. Codex sessions are therefore removed only by the fallback
+   TTL backstop (see TTLs below). This is the resolved answer to the "best Codex
+   session end signal" open question: there is none today.
+2. **No `Notification` for Codex.** The `attention` state is currently reachable
+   only for Claude. Codex sessions express `permission` (via `PermissionRequest`)
+   but not the softer `attention` cue. The renderer must not assume every agent
+   can produce every state.
+
 ## State and color mapping
 
 The registry should store both semantic state and resolved RGB color.
@@ -232,17 +284,44 @@ For reset/done/expired states:
 
 - `working`: active blue light
 - `permission`: active red light
-- `attention`: active orange light
-- `done`: green light, then expire after a configurable TTL
-- `session.start`: neutral/reset; can create or update session with short TTL
-- session end/reset event: either mark ended and expire quickly, or delete immediately
+- `attention`: active orange light (Claude only — Codex has no `Notification`)
+- `done`: green light that stays **until the session exits**, not on a short
+  timer (resolved 2026-05-30)
+- `session.start`: neutral/reset; creates or refreshes the session row
+- session end: mark ended, show a brief afterglow, then prune (resolved
+  2026-05-30)
 
-Proposed initial TTLs:
+### TTL model (resolved 2026-05-30)
 
-- `working`, `permission`, `attention`: 2 hours unless refreshed
-- `done`: 30 minutes
-- `session.start`: 10 minutes unless followed by activity
-- explicit session end: delete immediately or expire after 60 seconds
+The decision was "`done` stays visible until the terminal exits." For Claude
+that exit is observable (`SessionEnd`); for Codex it is not. So `expires_at` is
+**not** the primary lifecycle signal — it is a *fallback backstop* that prevents
+dead sessions (crash, kill -9, closed terminal with no clean `SessionEnd`) from
+lingering forever. Every write sets `expires_at = updated_at + fallback`, and
+the deterministic end signal (when it arrives) overrides it.
+
+| State | Light | Removed by | Fallback TTL backstop |
+|---|---|---|---|
+| `working` / `permission` / `attention` | blue / red / orange | next state change | 2 h since last event |
+| `done` | green | `SessionEnd` (Claude); TTL only (Codex) | 12 h since last event |
+| `session.start` | neutral | first real activity | 10 min if no activity follows |
+| explicit `SessionEnd` | neutral/green afterglow | prune pass | `updated_at + 60 s` |
+
+Afterglow mechanics: on `SessionEnd`, the writer does **not** delete the row.
+It sets the state to a terminal/neutral value and `expires_at = now + 60`. The
+row is then pruned by the normal `DELETE ... WHERE expires_at < unixepoch()`
+step on the next write (or by the renderer / `sessions prune`). This gives a
+~60s "just wrapped up" glance without a lingering indicator, and needs no
+separate timer.
+
+Codex caveat: because Codex never emits `SessionEnd`, a finished Codex session
+shows green until its 12 h `done` backstop elapses (or the user runs
+`tab-chroma sessions prune`/`clear`). This is the accepted trade-off of "until
+terminal exits" given the available signals. If Codex later exposes an exit
+hook, register it and route it to the same afterglow path.
+
+All TTL values above should be config-driven (see Phase 3) rather than
+hard-coded, so the backstops can be tuned without code changes.
 
 ## Menu bar renderer: first pass
 
@@ -280,6 +359,28 @@ Potential SwiftBar color markup should be validated in implementation. If it is 
 ```text
 C🔵 C🟢 C🔴 X🔵 X🟠
 ```
+
+### Crowding / collapse behavior (resolved 2026-05-30)
+
+Default to one light per session (matches the original "show me 7 indicators"
+requirement), but **collapse past a threshold** so the menu bar can't grow
+without bound. Proposed rule:
+
+- If `session_count <= COLLAPSE_THRESHOLD` (initial default: 8), render one light
+  per session as above.
+- If `session_count > COLLAPSE_THRESHOLD`, group by `(agent, state)` and render a
+  count badge per group, ordered by agent then state severity:
+
+  ```text
+  C🔵×5 C🔴×2 C🟢×3 X🔵×1 X🔴×2
+  ```
+
+- The dropdown **always** lists every session individually with full detail
+  (agent, label, state, cwd, updated time), collapsed or not — collapsing only
+  affects the compact menu bar line, never the detail view.
+
+`COLLAPSE_THRESHOLD` should be config-driven (Phase 3). Threshold counts total
+sessions, not per-agent, since the constraint is overall menu bar width.
 
 ## Concurrency and race conditions
 
@@ -392,13 +493,30 @@ Open questions:
 
 ## Open questions
 
-- Should the database live under the current `DATA_DIR` or a more app-neutral macOS Application Support path?
-- Should `done` sessions remain visible for 30 minutes, until terminal exits, or until the next session starts?
-- Should explicit session end delete immediately or leave a brief neutral/green afterglow?
-- What is the best Codex session end signal, if any, besides `Stop`?
-- How much detail should the menu bar show before it becomes too wide?
-- Should the renderer collapse many sessions after a threshold, e.g. `C🔵×5 X🔴×2`, or always show one element per session as requested?
+Resolved 2026-05-30 (see [Resolved decisions](#resolved-decisions-2026-05-30)):
+DB location, `done` visibility, session-end behavior, Codex end signal, and
+menu bar crowding/collapse.
+
+Still open:
+
+- **Codex identity stability.** Does the Codex `session_id` stay constant across
+  a session's hook events, or does it need the fallback composite key? Verify
+  during Phase 1 against real Codex payloads before committing to the key shape.
+- **iTerm2 geometry (Phase 4).** The second-pass open questions below remain —
+  what stable identifiers exist in Claude/Codex hook environments, whether
+  iTerm2 can expose tab order/tty without Accessibility permissions, and how
+  panes/splits and tab moves map to registry keys.
+- **Uninstall semantics for the registry.** `cmd_uninstall` currently `rm -rf`s
+  `DATA_DIR`. With the DB now in Application Support, should uninstall delete the
+  registry, prompt, or leave it? (Leaning toward: prompt, default-keep, since it
+  may be shared with a still-installed sibling agent.)
 
 ## Current recommendation
 
 Proceed with SQLite for the shared registry and a SwiftBar/xbar reader for the first UI. This gives robust concurrent updates, keeps TabChroma scriptable, and supports one indicator per active session without prematurely building a custom macOS app.
+
+With the 2026-05-30 decisions resolved (DB in Application Support, `done` lives
+until exit with a TTL backstop, ~60s afterglow on `SessionEnd`, collapse past 8
+sessions, and explicit `TAB_CHROMA_AGENT` tagging), Phase 1 (the registry
+writer) is unblocked and is the next concrete step. The one item to validate
+during Phase 1 itself is Codex `session_id` stability against real payloads.

@@ -127,3 +127,35 @@ User requested a new branch, WORM log, and design doc. Current desired direction
    - Arrange lights left-to-right to match the actual visible tab order.
 5. Commit and push branch for work in another session.
 
+---
+
+## 2026-05-30 — Design decisions resolved
+
+Picked up the design doc to refine it. Resolved the previously-open product
+questions; mirrored into `docs/design/session-registry-lights.md`.
+
+- **DB location:** `~/Library/Application Support/TabChroma/sessions.sqlite3`,
+  not under `DATA_DIR`. App-neutral, shared across Claude + Codex, survives
+  plugin reinstall. Writer must `mkdir -p` it; uninstall should not implicitly
+  `rm -rf` it. Add a `TAB_CHROMA_REGISTRY_DB` override for tests.
+- **`done` visibility:** stays green **until the session/terminal exits**, not on
+  a short timer. `expires_at` becomes a *fallback backstop* (working/permission/
+  attention: 2 h; done: 12 h; session.start: 10 min) rather than the primary
+  lifecycle signal.
+- **Explicit session end:** **brief afterglow** — on `SessionEnd` set a neutral/
+  green state and `expires_at = now + 60s`, let the normal prune pass remove it.
+  No separate timer needed.
+- **Codex session-end signal:** **none exists.** Verified the installer registers
+  no `SessionEnd` (nor `Notification`) hook for Codex (`tab-chroma.sh:463`);
+  only Claude gets them (`:462`). So Codex sessions rely on the TTL backstop, and
+  `attention` is Claude-only. The renderer must not assume every agent produces
+  every state.
+- **Menu bar crowding:** **collapse past a threshold** (default 8). At/below the
+  threshold, one light per session (the original requirement); above it, group by
+  `(agent, state)` with a count (`C🔵×5 X🔴×2`). The dropdown always lists every
+  session individually regardless of collapse.
+
+Net effect: Phase 1 (registry writer) is unblocked. The one thing to verify
+during Phase 1 is whether the Codex `session_id` is stable across a session's
+hook events, which determines whether the composite fallback key is needed.
+
