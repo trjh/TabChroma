@@ -460,7 +460,10 @@ Open questions:
 ### Phase 1: registry writer
 
 - Add a small Python helper, e.g. `scripts/tab_chroma_registry.py` or inline function in `tab-chroma.sh`.
-- Create/open SQLite DB in data dir.
+- Create/open the SQLite DB at the resolved registry path
+  (`~/Library/Application Support/TabChroma/sessions.sqlite3`, overridable via
+  `TAB_CHROMA_REGISTRY_DB`), `mkdir -p`-ing the registry directory on first use.
+  This is the Application Support path, **not** `DATA_DIR`.
 - On each resolved hook event, upsert session row with agent, session id, state, cwd, project label, theme, RGB, and TTL.
 - Prune expired sessions during writes.
 - Keep registry update best-effort and silent in hook mode.
