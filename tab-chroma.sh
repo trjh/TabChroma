@@ -148,7 +148,7 @@ EOF
 
 cmd_help() {
   cat << EOF
-tab-chroma v$VERSION — iTerm2 visual feedback for Claude Code
+tab-chroma v$VERSION — iTerm2 visual feedback for Claude Code and Codex
 
 USAGE:
   tab-chroma <command> [args]
@@ -180,7 +180,7 @@ INFO:
   version               Show version
 
 SETUP:
-  install               Register Claude Code hooks
+  install               Register Claude Code and Codex hooks
   uninstall             Remove hooks, completions, and data files
 EOF
 }
@@ -460,6 +460,7 @@ cmd_install() {
   # instead of pinning a versioned Cellar path.
   local hook_cmd="${TAB_CHROMA_HOOK_CMD:-$SCRIPT_DIR/tab-chroma.sh}"
   local events="SessionStart SessionEnd UserPromptSubmit PreToolUse PostToolUse Stop Notification PermissionRequest"
+  local codex_events="SessionStart UserPromptSubmit PreToolUse PostToolUse Stop PermissionRequest"
 
   mkdir -p "$HOME/.claude"
   if [ ! -f "$settings" ]; then
@@ -498,6 +499,54 @@ if changed:
 else:
     print("tab-chroma hooks already registered")
 PYEOF
+
+  if command -v codex >/dev/null 2>&1 || [ -d "$HOME/.codex" ]; then
+    local codex_hooks="$HOME/.codex/hooks.json"
+    mkdir -p "$HOME/.codex"
+    if [ ! -f "$codex_hooks" ]; then
+      echo '{"hooks":{}}' > "$codex_hooks"
+    fi
+
+    python3 - "$codex_hooks" "$hook_cmd" $codex_events << 'PYEOF'
+import json, sys
+
+hooks_path, hook_cmd = sys.argv[1], sys.argv[2]
+events = sys.argv[3:]
+
+try:
+    with open(hooks_path) as f:
+        cfg = json.load(f)
+except Exception:
+    cfg = {}
+
+cfg.setdefault("hooks", {})
+changed = False
+for event in events:
+    matchers = cfg["hooks"].setdefault(event, [])
+    catch_all = next((m for m in matchers if m.get("matcher", "") in ("", "*")), None)
+    if catch_all is None:
+        catch_all = {"matcher": "", "hooks": []}
+        matchers.append(catch_all)
+    hook_entry = {"type": "command", "command": hook_cmd}
+    if not any(h.get("command") == hook_cmd for h in catch_all.get("hooks", [])):
+        catch_all.setdefault("hooks", []).append(hook_entry)
+        changed = True
+
+tmp = hooks_path + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+import os
+os.replace(tmp, hooks_path)
+
+if changed:
+    print(f"tab-chroma Codex hooks registered in {hooks_path}")
+else:
+    print("tab-chroma Codex hooks already registered")
+PYEOF
+  else
+    echo "Codex not found; skipping Codex hook registration."
+  fi
 
   # Set up shell alias and completions
   local zshrc="$HOME/.zshrc"
@@ -548,7 +597,7 @@ cmd_uninstall() {
     return 0
   fi
 
-  echo "Removing hooks from $settings..."
+  echo "Removing Claude hooks from $settings..."
   # Match on every path tab-chroma may have registered: the share/script dir,
   # the writable data dir, and the stable hook command (Homebrew wrapper).
   python3 - "$settings" "$install_dir" "$DATA_DIR" "$hook_cmd" << 'PYEOF'
@@ -577,6 +626,36 @@ if changed:
     print("  Removed tab-chroma hook entries.")
 else:
     print("  No tab-chroma hooks found in settings.")
+PYEOF
+
+  local codex_hooks="$HOME/.codex/hooks.json"
+  echo "Removing Codex hooks from $codex_hooks..."
+  python3 - "$codex_hooks" "$install_dir" "$DATA_DIR" "$hook_cmd" << 'PYEOF'
+import json, os, sys
+hooks_path = sys.argv[1]
+needles = [n for n in sys.argv[2:] if n]
+if not os.path.exists(hooks_path):
+    print("  hooks.json not found, skipping"); sys.exit(0)
+try:
+    cfg = json.load(open(hooks_path))
+except Exception as e:
+    print(f"  error reading hooks.json: {e}"); sys.exit(0)
+changed = False
+for event, entries in cfg.get("hooks", {}).items():
+    for entry in entries:
+        orig = list(entry.get("hooks", []))
+        entry["hooks"] = [h for h in orig
+                          if not any(n in h.get("command", "") for n in needles)]
+        if len(entry["hooks"]) != len(orig):
+            changed = True
+if changed:
+    tmp = hooks_path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(cfg, f, indent=2); f.write("\n")
+    os.replace(tmp, hooks_path)
+    print("  Removed tab-chroma Codex hook entries.")
+else:
+    print("  No tab-chroma Codex hooks found.")
 PYEOF
 
   if [ "$TERM_PROGRAM" = "iTerm.app" ]; then

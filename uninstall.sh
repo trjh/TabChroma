@@ -3,6 +3,7 @@
 
 INSTALL_DIR="$HOME/.claude/hooks/tab-chroma"
 SETTINGS_FILE="$HOME/.claude/settings.json"
+CODEX_HOOKS_FILE="$HOME/.codex/hooks.json"
 
 echo "tab-chroma uninstaller"
 echo ""
@@ -63,15 +64,58 @@ else:
     print("  No tab-chroma hooks found in settings.")
 EOF
 
-# ─── 2. Reset tab color and clear badge ───────────────────────────────────────
+# ─── 2. Remove Codex hooks ────────────────────────────────────────────────────
+
+echo "Removing Codex hooks from $CODEX_HOOKS_FILE..."
+
+python3 - << EOF
+import json, os, sys
+
+hooks_path = "$CODEX_HOOKS_FILE"
+install_dir = "$INSTALL_DIR"
+
+if not os.path.exists(hooks_path):
+    print("  hooks.json not found, skipping")
+    sys.exit(0)
+
+try:
+    cfg = json.load(open(hooks_path))
+except Exception as e:
+    print(f"  error reading hooks.json: {e}")
+    sys.exit(0)
+
+changed = False
+for event, entries in cfg.get("hooks", {}).items():
+    for entry in entries:
+        original = list(entry.get("hooks", []))
+        entry["hooks"] = [
+            h for h in original
+            if install_dir not in h.get("command", "")
+        ]
+        if len(entry["hooks"]) != len(original):
+            changed = True
+
+if changed:
+    tmp_path = hooks_path + ".tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
+    os.replace(tmp_path, hooks_path)
+    print("  Removed tab-chroma Codex hook entries.")
+else:
+    print("  No tab-chroma Codex hooks found.")
+EOF
+
+# ─── 3. Reset tab color and clear badge ───────────────────────────────────────
 
 if [ "$TERM_PROGRAM" = "iTerm.app" ]; then
-  printf '\033]6;1;bg;*;default\a' > /dev/tty
-  printf '\033]1337;SetBadgeFormat=\a' > /dev/tty
-  echo "Tab color reset and badge cleared."
+  if { printf '\033]6;1;bg;*;default\a'
+       printf '\033]1337;SetBadgeFormat=\a'; } 2>/dev/null > /dev/tty; then
+    echo "Tab color reset and badge cleared."
+  fi
 fi
 
-# ─── 3. Remove completions ────────────────────────────────────────────────────
+# ─── 4. Remove completions ────────────────────────────────────────────────────
 
 echo "Removing completions..."
 
@@ -87,12 +131,12 @@ if [ -f "$FISH_COMPLETION" ]; then
   echo "  removed $FISH_COMPLETION"
 fi
 
-# ─── 4. Note about alias ──────────────────────────────────────────────────────
+# ─── 5. Note about alias ──────────────────────────────────────────────────────
 
 echo ""
 echo "Note: if you added 'alias tab-chroma=...' to .zshrc/.bashrc, remove it manually."
 
-# ─── 5. Remove install directory ──────────────────────────────────────────────
+# ─── 6. Remove install directory ──────────────────────────────────────────────
 
 echo ""
 echo "Removing $INSTALL_DIR..."

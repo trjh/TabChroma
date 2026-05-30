@@ -24,5 +24,5 @@ If `$ARGUMENTS` is empty, run `status` instead:
 - `test <state>` — manually trigger a state (working/done/attention/permission)
 - `reset` — reset tab to default color
 - `color on|off` / `badge on|off` / `title on|off` — toggle features
-- `install` — register Claude Code hooks
+- `install` — register Claude Code and Codex hooks
 - `uninstall` — remove hooks, completions, and data files
