@@ -11,3 +11,9 @@ venv/
 # Claude Code
 .claude/
 *.claude_session
+
+# Local runtime/session state
+.context/
+config.json
+.state.json
+.paused

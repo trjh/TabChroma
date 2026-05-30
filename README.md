@@ -4,11 +4,11 @@
   <img src="docs/assets/presentation.gif" alt="TabChroma demo" />
 </p>
 
-iTerm2 visual feedback plugin for [Claude Code](https://claude.ai/code). Changes your tab color, badge, and title based on what Claude is doing - so you can glance at any tab and know its state at a moment's notice.
+iTerm2 visual feedback plugin for [Claude Code](https://claude.ai/code) and [OpenAI Codex](https://developers.openai.com/codex/). Changes your tab color, badge, and title based on what your coding agent is doing - so you can glance at any tab and know its state at a moment's notice.
 
 | State | Default Color | Meaning |
 |-------|--------------|---------|
-| working | Blue | Claude is processing |
+| working | Blue | Agent is processing |
 | done | Green | Ready for your input |
 | attention | Orange | Needs your attention |
 | permission | Red | Awaiting approval |
@@ -17,21 +17,16 @@ iTerm2 visual feedback plugin for [Claude Code](https://claude.ai/code). Changes
 ## Requirements
 
 - macOS with [iTerm2](https://iterm2.com)
-- [Claude Code](https://claude.ai/code) CLI
+- [Claude Code](https://claude.ai/code) CLI and/or [OpenAI Codex](https://developers.openai.com/codex/) CLI
 - Python 3 (standard library only)
-- **zsh** - the installer writes the shell alias and `claude()` wrapper to `~/.zshrc`. bash and fish are not supported by the installer; add the following manually to your shell rc file:
+- **zsh** - the installer writes the `tab-chroma` shell alias to `~/.zshrc`. bash and fish are not supported by the installer; add the following manually to your shell rc file:
 
 ```bash
 # Makes `tab-chroma` available as a command
 alias tab-chroma='~/.claude/hooks/tab-chroma/tab-chroma.sh'
 
-# Wraps the `claude` command so the tab color resets when you exit Claude Code.
-# Claude Code has no SessionEnd hook, so without this the tab stays colored
-# after you close the session.
-claude() {
-  command claude "$@"
-  tab-chroma reset > /dev/null 2>&1
-}
+# Optional fallback: if your agent CLI does not emit a session-end/stop hook,
+# run `tab-chroma reset` when you close the session.
 ```
 
 ## Installation
@@ -53,7 +48,7 @@ tab-chroma test working
 ```bash
 brew tap JCPetrelli/tab-chroma https://github.com/JCPetrelli/TabChroma
 brew install tab-chroma
-tab-chroma install   # registers Claude Code hooks
+tab-chroma install   # registers Claude Code and Codex hooks
 ```
 
 ### Option 3 - Manual
@@ -91,7 +86,7 @@ TESTING:
   reset                 Reset tab to default color
 
 SETUP:
-  install               Register Claude Code hooks
+  install               Register Claude Code and Codex hooks
   uninstall             Remove hooks and data files
 ```
 
@@ -198,7 +193,7 @@ Create a directory under `~/.claude/hooks/tab-chroma/themes/<name>/` with a `the
 
 ## How It Works
 
-tab-chroma registers itself as a Claude Code hook for these events:
+tab-chroma registers itself as a Claude Code hook and a Codex lifecycle hook. These events drive the visual states:
 
 | Hook | State |
 |------|-------|
@@ -207,22 +202,36 @@ tab-chroma registers itself as a Claude Code hook for these events:
 | `PreToolUse` | working |
 | `PostToolUse` | working - recovers from permission state |
 | `Stop` | done |
-| `Notification` | attention or permission (based on message) |
+| `Notification` | attention or permission (Claude Code, based on message) |
 | `PermissionRequest` | permission |
+
+
+### Codex support
+
+`tab-chroma install` also writes Codex lifecycle hooks to `~/.codex/hooks.json` for:
+
+- `SessionStart` → reset
+- `UserPromptSubmit` / `PreToolUse` / `PostToolUse` → working
+- `Stop` → done
+- `PermissionRequest` → permission
+
+Codex does not currently emit a `Notification` hook, so the orange `attention` state is Claude Code-only.
+
+Codex may ask you to trust newly discovered hooks the first time it sees them.
 
 ### Debouncing
 
-If the same state fires more than once within `debounce_seconds` (default: 2s), subsequent updates are skipped. A typical Claude turn with many tool uses would otherwise send dozens of identical escape sequences, causing unnecessary overhead and visual noise. Debouncing means only the first transition to a state triggers a visual update - subsequent identical events within the window are no-ops.
+If the same state fires more than once within `debounce_seconds` (default: 2s), subsequent updates are skipped. A typical agent turn with many tool uses would otherwise send dozens of identical escape sequences, causing unnecessary overhead and visual noise. Debouncing means only the first transition to a state triggers a visual update - subsequent identical events within the window are no-ops.
 
 `permission` and `attention` bypass debouncing entirely and always update immediately, since you never want to miss them.
 
 ### Permission recovery
 
-When Claude needs to use a restricted tool, `PermissionRequest` fires and the tab turns red. Once you approve and the tool runs, `PostToolUse` fires and the tab returns to working (blue) automatically - you don't need to do anything.
+When the agent needs to use a restricted tool, `PermissionRequest` fires and the tab turns red. Once you approve and the tool runs, `PostToolUse` fires and the tab returns to working (blue) automatically - you don't need to do anything.
 
 ### Implementation notes
 
-All escape sequences write to `/dev/tty` (not stdout) so Claude Code's hook runner isn't affected. JSON parsing, debouncing, and theme resolution all run in a single `python3` invocation per hook event to minimize subprocess overhead.
+All escape sequences write to the resolved terminal device (not stdout) so the hook runner isn't affected. JSON parsing, debouncing, and theme resolution all run in a single `python3` invocation per hook event to minimize subprocess overhead.
 
 ## Uninstalling
 
