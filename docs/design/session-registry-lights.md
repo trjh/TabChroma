@@ -512,22 +512,25 @@ model that ships only `tab-chroma.sh`/themes/completions/VERSION):
 ## Open questions
 
 Resolved 2026-05-30 (see [Resolved decisions](#resolved-decisions-2026-05-30)):
-DB location, `done` visibility, session-end behavior, Codex end signal, and
-menu bar crowding/collapse.
+DB location, `done` visibility, session-end behavior, Codex end signal, menu
+bar crowding/collapse, and uninstall semantics.
+
+**Uninstall semantics — resolved (implemented in Phase 1).** Because the
+registry lives in Application Support, `cmd_uninstall`'s `rm -rf "$DATA_DIR"`
+does not touch it. Uninstall now **leaves the shared registry in place** (it may
+still be used by a sibling agent install) and prints the path plus a manual
+`rm -f` command, rather than deleting or prompting. See `tab-chroma.sh`
+`cmd_uninstall`.
 
 Still open:
 
 - **Codex identity stability.** Does the Codex `session_id` stay constant across
-  a session's hook events, or does it need the fallback composite key? Verify
-  during Phase 1 against real Codex payloads before committing to the key shape.
+  a session's hook events, or does it need the fallback composite key? Verify in
+  Phase 2 against real Codex payloads before committing to the key shape.
 - **iTerm2 geometry (Phase 4).** The second-pass open questions below remain —
   what stable identifiers exist in Claude/Codex hook environments, whether
   iTerm2 can expose tab order/tty without Accessibility permissions, and how
   panes/splits and tab moves map to registry keys.
-- **Uninstall semantics for the registry.** `cmd_uninstall` currently `rm -rf`s
-  `DATA_DIR`. With the DB now in Application Support, should uninstall delete the
-  registry, prompt, or leave it? (Leaning toward: prompt, default-keep, since it
-  may be shared with a still-installed sibling agent.)
 
 ## Current recommendation
 

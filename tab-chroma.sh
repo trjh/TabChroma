@@ -1119,7 +1119,13 @@ try:
             reg_state, ttl = state_name, 2 * 3600        # working/permission/attention
         expires_at = now_i + ttl
 
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        # Only create a parent dir when the path actually has one. A
+        # basename-only override (e.g. TAB_CHROMA_REGISTRY_DB=sessions.sqlite3)
+        # has an empty dirname, and os.makedirs("") would raise and silently
+        # skip the whole write under the surrounding try/except.
+        db_dir = os.path.dirname(db_path)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
         con = sqlite3.connect(db_path, timeout=0.25)
         try:
             con.execute("PRAGMA journal_mode=WAL")

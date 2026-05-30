@@ -1,9 +1,9 @@
 # WORM Log — Session Registry + Per-Session Lights
 
-**Created:** 2026-05-30 12:42 Europe/Dublin  
-**Branch:** `design/session-registry-lights`  
-**Repository:** `trjh/TabChroma`  
-**Intent:** Append-only record for the menu-bar session indicator design discussion.
+- **Created:** 2026-05-30 12:42 Europe/Dublin
+- **Branch:** `design/session-registry-lights`
+- **Repository:** `trjh/TabChroma`
+- **Intent:** Append-only record for the menu-bar session indicator design discussion.
 
 ## WORM rules for this file
 
@@ -197,4 +197,3 @@ Validated under `/bin/bash 3.2`: hook simulation across all states, SessionEnd
 afterglow + prune-on-write, TTL values, installer upgrade/idempotency/no-dupes,
 and the `sessions` CLI. Codex `session_id` stability against real payloads is
 still the open item to confirm before relying on the non-composite key.
-
