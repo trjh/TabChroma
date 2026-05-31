@@ -266,3 +266,37 @@ Known caveats:
 - `ITERM_SESSION_ID` is retained for future iTerm2 Python API / geometry work,
   but the first focusing pass prefers `tty_device`.
 
+
+---
+
+## 2026-05-31 — Phase 3 implementation notes
+
+Implemented the first click-to-focus pass on branch `phase3/swiftbar-focus`.
+
+Changes:
+
+- `tab-chroma.sh`
+  - Added `tab-chroma sessions focus <session_key>`.
+  - Added `tty_device` to the SQLite registry. Existing DBs are migrated with
+    `ALTER TABLE sessions ADD COLUMN tty_device TEXT` on the next hook write.
+  - Hook writes now pass the resolved `TTY_DEVICE` into the registry writer.
+  - `sessions list` now prints `session_key`, making manual focus testing easy.
+- `extras/swiftbar/tab-chroma-sessions.1s.py`
+  - Reads `session_key` from the registry.
+  - Makes each top-level session row clickable when `TAB_CHROMA_BIN` or an
+    installed `tab-chroma` binary can be found.
+  - Keeps detail submenu rows passive.
+  - Keeps registry access read-only.
+- `extras/swiftbar/README.md`
+  - Documents click-to-focus behavior, caveats, and manual testing.
+
+Validation performed:
+
+- `bash -n tab-chroma.sh install.sh uninstall.sh`
+- `python3 -m py_compile extras/swiftbar/tab-chroma-sessions.1s.py`
+- Simulated hook write into a temporary registry DB.
+- Verified `tty_device` exists in the DB schema.
+- Verified `tab-chroma sessions list` shows the session key.
+- Verified the SwiftBar plugin emits a clickable row with `param2=focus` and
+  `param3=<session_key>`.
+

@@ -185,6 +185,7 @@ TESTING:
 
 SESSIONS:
   sessions list         Show active agent sessions in the shared registry
+  sessions focus <key>  Raise iTerm2 and focus the session
   sessions prune        Remove expired sessions
   sessions clear        Remove all sessions
   sessions path         Print the registry database path
@@ -778,17 +779,93 @@ cmd_sessions() {
     path)
       echo "$REGISTRY_DB"
       ;;
-    list|prune|clear)
-      TAB_CHROMA_REGISTRY_DB="$REGISTRY_DB" python3 - "$sub" << 'PYEOF'
-import os, sys, time
+    list|prune|clear|focus)
+      TAB_CHROMA_REGISTRY_DB="$REGISTRY_DB" python3 - "$sub" "$@" << 'PYEOF'
+import os, subprocess, sys, time
 sub = sys.argv[1]
+args = sys.argv[2:]
 db = os.environ.get("TAB_CHROMA_REGISTRY_DB", "")
 if not db or not os.path.exists(db):
     print("No session registry yet (no agent sessions recorded).")
-    sys.exit(0)
+    sys.exit(0 if sub != "focus" else 1)
 import sqlite3
 now = int(time.time())
 con = sqlite3.connect(db, timeout=1.0)
+con.row_factory = sqlite3.Row
+
+def has_column(name):
+    try:
+        return any(row[1] == name for row in con.execute("PRAGMA table_info(sessions)"))
+    except sqlite3.OperationalError:
+        return False
+
+def session_row(key):
+    tty_expr = "tty_device" if has_column("tty_device") else "'' AS tty_device"
+    return con.execute(
+        f"SELECT session_key, agent, agent_session_id, state, label, cwd, terminal, {tty_expr} "
+        "FROM sessions WHERE session_key = ? OR agent_session_id = ? LIMIT 1",
+        (key, key),
+    ).fetchone()
+
+def focus_iterm(row):
+    tty = (row["tty_device"] or "").strip()
+    terminal = (row["terminal"] or "").strip()
+    label = row["label"] or row["cwd"] or row["session_key"]
+    script = r'''
+on run argv
+  set targetTty to item 1 of argv
+  set targetTerminal to item 2 of argv
+  tell application "iTerm2"
+    activate
+    repeat with w in windows
+      repeat with t in tabs of w
+        repeat with s in sessions of t
+          set matched to false
+          try
+            if targetTty is not "" and ((tty of s) as text) is targetTty then set matched to true
+          end try
+          try
+            if not matched and targetTerminal is not "" and ((id of s) as text) is targetTerminal then set matched to true
+          end try
+          if matched then
+            try
+              select w
+            end try
+            try
+              select t
+            end try
+            try
+              select s
+            end try
+            return "focused"
+          end if
+        end repeat
+      end repeat
+    end repeat
+  end tell
+  return "not-found"
+end run
+'''
+    try:
+        result = subprocess.run(
+            ["/usr/bin/osascript", "-e", script, tty, terminal],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+    except Exception as e:
+        subprocess.run(["/usr/bin/open", "-a", "iTerm"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(f"Could not focus {label}: {e}", file=sys.stderr)
+        return 1
+    if result.returncode == 0 and result.stdout.strip() == "focused":
+        print(f"Focused {label}")
+        return 0
+    subprocess.run(["/usr/bin/open", "-a", "iTerm"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    detail = (result.stderr or result.stdout or "not found").strip()
+    print(f"Activated iTerm, but could not find session {row['session_key']} ({detail}).", file=sys.stderr)
+    return 1
+
 try:
     con.execute("PRAGMA busy_timeout=1000")
     if sub == "clear":
@@ -801,19 +878,28 @@ try:
             (now,)).rowcount
         con.commit()
         print(f"Pruned {n} expired session(s).")
-    else:  # list — active (unexpired) sessions only
+    elif sub == "focus":
+        if not args:
+            print("usage: tab-chroma sessions focus <session_key>", file=sys.stderr)
+            sys.exit(2)
+        row = session_row(args[0])
+        if row is None:
+            print(f"No session found for key: {args[0]}", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(focus_iterm(row))
+    else:
         rows = con.execute(
-            "SELECT agent, state, label, cwd, updated_at FROM sessions "
+            "SELECT session_key, agent, state, label, cwd, updated_at FROM sessions "
             "WHERE expires_at IS NULL OR expires_at >= ? "
             "ORDER BY updated_at DESC", (now,)).fetchall()
         if not rows:
             print("No active sessions.")
             sys.exit(0)
-        print(f"{'AGENT':<7} {'STATE':<10} {'LABEL':<18} {'AGE':<6} CWD")
-        for agent, state, label, cwd, upd in rows:
+        print(f"{'KEY':<28} {'AGENT':<7} {'STATE':<10} {'LABEL':<18} {'AGE':<6} CWD")
+        for key, agent, state, label, cwd, upd in rows:
             age = now - (upd or now)
             age_s = f"{age}s" if age < 60 else (f"{age//60}m" if age < 3600 else f"{age//3600}h")
-            print(f"{agent:<7} {state:<10} {(label or ''):<18} {age_s:<6} {cwd or ''}")
+            print(f"{key:<28} {agent:<7} {state:<10} {(label or ''):<18} {age_s:<6} {cwd or ''}")
 except sqlite3.OperationalError as e:
     print(f"registry error: {e}", file=sys.stderr)
     sys.exit(1)
@@ -823,7 +909,7 @@ PYEOF
       ;;
     *)
       echo "unknown sessions subcommand: $sub" >&2
-      echo "usage: tab-chroma sessions [list|prune|clear|path]" >&2
+      echo "usage: tab-chroma sessions [list|focus <key>|prune|clear|path]" >&2
       return 1
       ;;
   esac
@@ -900,6 +986,7 @@ process_hook() {
   TAB_CHROMA_THEMES="$THEMES_DIR" \
   TAB_CHROMA_AGENT="${TAB_CHROMA_AGENT:-}" \
   TAB_CHROMA_REGISTRY_DB="$REGISTRY_DB" \
+  TAB_CHROMA_TTY_DEVICE="$TTY_DEVICE" \
   python3 - << 'PYEOF'
 import sys, json, os, time, shlex
 
@@ -1098,6 +1185,7 @@ try:
     if db_path:
         agent = (os.environ.get("TAB_CHROMA_AGENT") or "").strip() or "claude"
         terminal = os.environ.get("ITERM_SESSION_ID") or os.environ.get("TERM_SESSION_ID") or ""
+        tty_device = os.environ.get("TAB_CHROMA_TTY_DEVICE", "")
 
         # Stable per-session key; fall back to a composite when no session id.
         if session_id:
@@ -1145,21 +1233,27 @@ try:
                 updated_at INTEGER NOT NULL,
                 expires_at INTEGER,
                 metadata_json TEXT)""")
+            try:
+                columns = {row[1] for row in con.execute("PRAGMA table_info(sessions)")}
+                if "tty_device" not in columns:
+                    con.execute("ALTER TABLE sessions ADD COLUMN tty_device TEXT")
+            except Exception:
+                pass
             con.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at)")
             con.execute("BEGIN IMMEDIATE")
             # started_at is intentionally NOT in the UPDATE set, so it is kept
             # from the original INSERT across the whole session lifetime.
             con.execute("""INSERT INTO sessions
-                (session_key, agent, agent_session_id, state, label, cwd, terminal,
+                (session_key, agent, agent_session_id, state, label, cwd, terminal, tty_device,
                  theme, color_r, color_g, color_b, started_at, updated_at, expires_at, metadata_json)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(session_key) DO UPDATE SET
                   state=excluded.state, label=excluded.label, cwd=excluded.cwd,
-                  terminal=excluded.terminal, theme=excluded.theme,
+                  terminal=excluded.terminal, tty_device=excluded.tty_device, theme=excluded.theme,
                   color_r=excluded.color_r, color_g=excluded.color_g, color_b=excluded.color_b,
                   updated_at=excluded.updated_at, expires_at=excluded.expires_at""",
                 (session_key, agent, session_id, reg_state, project_name or label, cwd,
-                 terminal, theme_name, r, g, b, now_i, now_i, expires_at, None))
+                 terminal, tty_device, theme_name, r, g, b, now_i, now_i, expires_at, None))
             con.execute("DELETE FROM sessions WHERE expires_at IS NOT NULL AND expires_at < ?", (now_i,))
             con.commit()
         finally:
