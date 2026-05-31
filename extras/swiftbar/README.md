@@ -19,8 +19,10 @@ C🔵 C🟢 X🔴
 | ⚫ | ended (brief afterglow before the row is pruned) |
 
 Clicking the menu-bar item drops down a list of every session (agent, label,
-state, age) with its working directory and session id, plus actions to refresh,
-prune expired sessions, clear the registry, and open the registry folder.
+state, age) with its working directory and session id. **Click a session row to
+raise iTerm2 and focus the tab/session it belongs to**. The dropdown also has
+actions to refresh, prune expired sessions, clear the registry, and open the
+registry folder.
 
 ## Prerequisites
 
@@ -61,6 +63,38 @@ relaunch SwiftBar.
 
 The `.1s.py` in the filename is the **refresh interval** (1 second). To poll
 less often, rename the copy, e.g. `tab-chroma-sessions.2s.py` or `.5s.py`.
+
+
+## Focus iTerm2 from a session row
+
+Each active session row is clickable. Selecting it runs:
+
+```bash
+tab-chroma sessions focus <session_key>
+```
+
+TabChroma reads the shared registry, finds the terminal identity recorded by the
+hook (`tty_device` first, with the iTerm/Terminal session id retained for future
+matching), activates iTerm2, and asks iTerm2 to select the matching
+window/tab/session.
+
+This is best-effort:
+
+- iTerm2 must be running and may ask macOS for Automation permission the first
+  time TabChroma controls it.
+- Matching is strongest for ordinary iTerm2 tabs/panes because the registry
+  stores the resolved tty path, e.g. `/dev/ttys003`.
+- If several agent sessions share one terminal through tmux or similar, focusing
+  can only raise that shared terminal session.
+- If no exact match is found, TabChroma still activates iTerm2 so you are close
+  to the right place.
+
+You can test a row manually with:
+
+```bash
+tab-chroma sessions list
+tab-chroma sessions focus '<session_key-from-list>'
+```
 
 ## Configuration
 
