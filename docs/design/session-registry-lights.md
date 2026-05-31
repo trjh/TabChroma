@@ -449,6 +449,72 @@ Open questions:
 - How should multiple panes/splits within one tab be represented?
 - If a session moves between tabs/windows, does the registry key remain correct?
 
+
+## Phase 3: SwiftBar click-to-focus design
+
+Goal: selecting a session in the SwiftBar/xbar dropdown should raise iTerm2 and
+select the window/tab/session that owns that agent session.
+
+### User experience
+
+The menu bar still shows compact lights. The dropdown changes from passive rows
+to clickable rows:
+
+```text
+🔵  TabChroma — working (3s) | bash=/path/to/tab-chroma param1=sessions param2=focus param3=claude:abc123 terminal=false refresh=true
+-- /Users/timh/TabChroma
+-- claude:abc123
+```
+
+Clicking the top row for a session runs:
+
+```bash
+tab-chroma sessions focus <session_key>
+```
+
+### Registry identity
+
+The existing registry already stores `terminal`, populated from
+`ITERM_SESSION_ID` or `TERM_SESSION_ID`. Phase 3 adds `tty_device` so the
+registry stores both:
+
+- `terminal`: agent terminal/session environment id for future matching.
+- `tty_device`: resolved tty path such as `/dev/ttys003`, used by the first
+  focus implementation.
+
+The schema remains backwards-compatible: installations with an older DB get
+`ALTER TABLE sessions ADD COLUMN tty_device TEXT` on the next hook write.
+
+### Focus command
+
+`tab-chroma sessions focus <session_key>` should:
+
+1. Read the registry row by `session_key`.
+2. Prefer matching iTerm2 sessions by `tty_device`.
+3. Keep `terminal` / `ITERM_SESSION_ID` available as a secondary/future match key.
+4. Activate iTerm2.
+5. Select the matching window/tab/session.
+6. Fall back to `open -a iTerm` / `open -a iTerm2` if no precise match is found.
+
+### Implementation choice
+
+Use AppleScript first because it is built into macOS and does not add a new
+runtime dependency. A later implementation can switch to or augment with the
+iTerm2 Python API if that provides more reliable IDs and geometry.
+
+### Failure policy
+
+Focusing is best-effort and interactive. It may print a useful error to stderr
+when invoked manually, unlike hook mode where output must stay silent. Failure to
+focus must never affect hook processing or registry writes.
+
+### Future geometry ordering
+
+The same identity fields (`tty_device`, `terminal`) are prerequisites for the
+future left-to-right ordering pass. Once iTerm2 windows/tabs can be matched, a
+background/order command can annotate rows with `window_id`, `tab_id`, and
+`display_order`.
+
 ## Implementation plan
 
 ### Phase 0: design-only branch

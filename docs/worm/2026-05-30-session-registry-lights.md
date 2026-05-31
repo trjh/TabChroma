@@ -226,3 +226,43 @@ On branch `phase2/swiftbar-session-lights`. Added a menu-bar reader:
 This is where storing RGB in the registry (a Phase 0 decision) paid off: the
 reader colors each dropdown row to the active theme with zero theme-resolution
 logic of its own.
+
+---
+
+## 2026-05-31 — Phase 3 design pass: click a SwiftBar session to focus iTerm2
+
+User asked whether selecting a SwiftBar menu item can raise the iTerm2 window/tab
+for the referenced Claude/Codex session, then requested a branch with design,
+WORM log, README-first implementation.
+
+Design intent:
+
+- Make each SwiftBar session row clickable.
+- Clicking a row invokes `tab-chroma sessions focus <session_key>`.
+- The focus command reads the shared SQLite registry, finds terminal identity
+  for that session, activates iTerm2, and selects the matching tab/session when
+  possible.
+- Keep the SwiftBar plugin itself read-only against SQLite; it only launches
+  `tab-chroma` actions.
+- Store a stronger terminal identity in the registry:
+  - `terminal`: existing iTerm/Terminal environment id (`ITERM_SESSION_ID` or
+    `TERM_SESSION_ID`).
+  - `tty_device`: resolved writable tty path, e.g. `/dev/ttys003`, used as the
+    first matching key for iTerm2 AppleScript.
+- Use AppleScript as the first implementation because it is available on macOS
+  without extra dependencies. A later pass can use the iTerm2 Python API if that
+  gives better identifiers/geometry.
+- Make focus best-effort:
+  - If there is no registry row, return an error.
+  - If iTerm2 is not running or the tab cannot be matched, activate iTerm2 as a
+    fallback and report that the session was not found.
+  - Do not affect hook behavior; focus is only a CLI/SwiftBar action.
+
+Known caveats:
+
+- iTerm2 AppleScript support and macOS Automation permissions may be required.
+- Matching by tty is strong for ordinary iTerm2 tabs/panes but can be ambiguous
+  if multiple agent sessions share one terminal through tmux or similar.
+- `ITERM_SESSION_ID` is retained for future iTerm2 Python API / geometry work,
+  but the first focusing pass prefers `tty_device`.
+
