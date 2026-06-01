@@ -191,6 +191,36 @@ Create a directory under `~/.claude/hooks/tab-chroma/themes/<name>/` with a `the
 }
 ```
 
+## Session lights (menu bar)
+
+Beyond per-tab colors, tab-chroma records every active Claude Code / Codex
+session in a shared local registry (`~/Library/Application Support/TabChroma/sessions.sqlite3`)
+so a menu-bar app can show **one status light per session** — handy when you
+have many agents running across tabs and windows:
+
+```
+🔵 🟢 🔴      blue working · green done · orange attention · red permission
+```
+
+By default each session is just a colored circle; set
+`TAB_CHROMA_LIGHTS_AGENT_PREFIX=on` to prefix the agent letter (`C🔵 X🟢`,
+C=Claude, X=Codex). The dropdown always names the agent per session.
+
+Inspect the registry from the CLI:
+
+```bash
+tab-chroma sessions list     # active sessions: agent, state, label, age, cwd
+tab-chroma sessions prune    # drop expired sessions
+tab-chroma sessions clear    # drop all sessions
+tab-chroma sessions path     # print the registry database path
+```
+
+A ready-to-use **SwiftBar / xbar** plugin lives in
+[`extras/swiftbar/`](extras/swiftbar/) — see its
+[README](extras/swiftbar/README.md) for install steps. The lights and CLI work
+for both Claude Code and Codex; because Codex has no session-end hook, finished
+Codex sessions linger (green) until a fallback TTL expires.
+
 ## How It Works
 
 tab-chroma registers itself as a Claude Code hook and a Codex lifecycle hook. These events drive the visual states:

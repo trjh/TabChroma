@@ -2,10 +2,10 @@
 
 ## Status
 
-- **Status:** Phase 1 (registry writer) implemented 2026-05-30, on branch `design/session-registry-lights`.
+- **Status:** Phases 1 (registry writer) + 2 (SwiftBar/xbar reader) implemented 2026-05-30.
 - **Storage:** SQLite (see [Recommendation](#recommendation)).
 - **DB location:** `~/Library/Application Support/TabChroma/sessions.sqlite3` (resolved 2026-05-30).
-- **Next step:** Phase 2 (SwiftBar/xbar reader). Validate Codex `session_id` stability against real payloads.
+- **Next step:** Validate Codex `session_id` stability against real payloads; Phase 4 (iTerm2 geometry ordering) is future work.
 
 See also: `docs/worm/2026-05-30-session-registry-lights.md` for the append-only discussion log that led to this design.
 
@@ -483,13 +483,29 @@ model that ships only `tab-chroma.sh`/themes/completions/VERSION):
   `sessions` CLI. (Note: `bash -n` under bash 5 does NOT catch the bash-3.2
   command-substitution apostrophe bug — always syntax-check with `/bin/bash`.)
 
-### Phase 2: SwiftBar/xbar plugin
+### Phase 2: SwiftBar/xbar plugin — DONE (2026-05-30)
 
-- Add `extras/swiftbar/tab-chroma-sessions.1s.py` or `.sh`.
-- Read SQLite registry.
-- Render compact one-light-per-session output.
-- Include dropdown rows with details.
-- Document install steps.
+Implemented `extras/swiftbar/tab-chroma-sessions.1s.py` (+ `extras/swiftbar/README.md`):
+
+- ✅ Reads the SQLite registry **read-only** (`mode=ro` URI), so it never
+  creates, writes, or locks the DB and cannot race the hook writers.
+- ✅ One light per active (unexpired) session in the menu bar, e.g. `C🔵 C🟢 X🔴`
+  (`C`=Claude, `X`=Codex); state→emoji matches the semantic colors
+  (working 🔵, done 🟢, attention 🟠, permission 🔴, starting ⚪, ended ⚫).
+- ✅ Collapses past `TAB_CHROMA_LIGHTS_COLLAPSE` (default 8) into grouped counts
+  (`C🔵×5 X🔴×2`); the dropdown always lists every session.
+- ✅ Dropdown rows are colored with the exact theme RGB stored in the registry
+  (`color_r/g/b`), with cwd + `agent:session_id` detail submenus.
+- ✅ Actions: Refresh, Prune expired, Clear all (via auto-detected `tab-chroma`
+  binary), Open registry folder.
+- ✅ Graceful states: idle shows a dim `○`; an unreadable DB shows a `⚠️` line;
+  dynamic values are sanitized so a `|`/newline in a path or label can't corrupt
+  a menu row.
+- Validated against a populated temp registry: idle, multi-session, collapse,
+  RGB coloring, and `|`-sanitization.
+
+Open follow-up: still want to confirm Codex `session_id` stability against real
+payloads, and Phase 4 (iTerm2 geometry ordering) remains future work.
 
 ### Phase 3: polish
 

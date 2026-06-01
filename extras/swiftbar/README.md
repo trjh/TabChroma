@@ -1,0 +1,86 @@
+# TabChroma Session Lights (SwiftBar / xbar)
+
+A menu-bar plugin that shows **one status light per active Claude Code / Codex
+session**, read from the TabChroma shared session registry.
+
+```
+C🔵 C🟢 X🔴
+```
+
+`C` = Claude, `X` = Codex. The light color follows TabChroma's semantic states:
+
+| Light | State |
+|---|---|
+| 🔵 | working |
+| 🟢 | done |
+| 🟠 | attention |
+| 🔴 | permission |
+| ⚪ | starting (session just began) |
+| ⚫ | ended (brief afterglow before the row is pruned) |
+
+Clicking the menu-bar item drops down a list of every session (agent, label,
+state, age) with its working directory and session id, plus actions to refresh,
+prune expired sessions, clear the registry, and open the registry folder.
+
+## Prerequisites
+
+1. TabChroma installed with the Phase 1 registry writer (run `tab-chroma install`).
+   The plugin reads the registry that the hooks populate; with no active
+   sessions it shows a dim `○`.
+2. **SwiftBar** (recommended) or **xbar**:
+   ```bash
+   brew install swiftbar      # or: brew install xbar
+   ```
+3. `python3` on `PATH` (the macOS Command Line Tools python3 is fine; the plugin
+   uses only the standard library).
+
+## Install
+
+**Copy** the plugin into your SwiftBar/xbar plugin folder (find the exact path
+in SwiftBar Preferences → "Plugin Folder", or xbar preferences):
+
+```bash
+# SwiftBar (adjust the destination to your configured Plugin Folder):
+cp extras/swiftbar/tab-chroma-sessions.1s.py \
+  ~/Library/Application\ Support/SwiftBar/Plugins/
+chmod +x ~/Library/Application\ Support/SwiftBar/Plugins/tab-chroma-sessions.1s.py
+```
+
+Then **fully quit and relaunch** SwiftBar (or xbar) so it rescans the folder.
+The light appears in the menu bar within ~1 second.
+
+> **Why copy, not symlink?** SwiftBar does not reliably pick up *symlinked*
+> plugins — a symlink may be silently skipped until you fully relaunch SwiftBar,
+> and on some versions never loads. A plain copy always works. The tradeoff is
+> that you must re-copy the file after pulling repo updates.
+
+If the light never shows up even though `./tab-chroma-sessions.1s.py` prints
+output in a terminal, the usual cause is a **full menu bar** hiding the icon
+under the notch — make room (or use a menu-bar manager like Ice/Bartender) and
+relaunch SwiftBar.
+
+The `.1s.py` in the filename is the **refresh interval** (1 second). To poll
+less often, rename the copy, e.g. `tab-chroma-sessions.2s.py` or `.5s.py`.
+
+## Configuration
+
+The plugin reads these environment variables (set them in SwiftBar's plugin
+environment, or export them where SwiftBar can see them):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `TAB_CHROMA_REGISTRY_DB` | `~/Library/Application Support/TabChroma/sessions.sqlite3` | Registry database path (must match the writer). |
+| `TAB_CHROMA_LIGHTS_AGENT_PREFIX` | `off` | Prefix each circle with the agent letter (`C`=Claude, `X`=Codex), e.g. `C🔵 X🟢`. Off by default (just circles). Set to `1`/`true`/`yes`/`on` to enable. |
+| `TAB_CHROMA_LIGHTS_COLLAPSE` | `8` | Above this many sessions, collapse the menu bar to grouped counts (`🔵×5 🔴×2`, or `C🔵×5 X🔴×2` with the agent prefix on); the dropdown still lists each session. `0` disables collapsing. |
+| `TAB_CHROMA_BIN` | auto-detected | Path to `tab-chroma.sh` used by the Prune/Clear actions. Auto-detected from `~/.claude/hooks/tab-chroma/tab-chroma.sh` or `PATH`; if not found, those actions are hidden. |
+
+## Notes
+
+- The plugin opens the registry **read-only** (`mode=ro`), so it never creates,
+  writes, or locks the database and cannot race the hook writers.
+- Sessions are pruned from the registry by the hook writers (and by the
+  Prune/Clear actions here), not by this reader. The reader simply hides expired
+  rows (`expires_at < now`).
+- Codex sessions have no clean end signal, so a finished Codex session shows 🟢
+  until its 12-hour fallback TTL elapses (or you Prune/Clear). This is expected;
+  see `docs/design/session-registry-lights.md`.
