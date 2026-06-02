@@ -924,12 +924,14 @@ try:
         print(f"Cleared {n} session(s).")
     elif sub == "prune":
         # Liveness sweep, mirroring the hook writer: drop rows whose process is
-        # gone, plus PID-less rows past their TTL backstop.
-        have_pid = has_column("session_pid")
-        pid_expr = "session_pid, pid_start" if have_pid else "NULL AS session_pid, '' AS pid_start"
+        # gone, plus PID-less rows past their TTL backstop. Each column is
+        # probed independently so a partially-migrated DB (session_pid added but
+        # pid_start not yet, or vice versa) still prunes instead of erroring.
+        pid_sel = "session_pid" if has_column("session_pid") else "NULL AS session_pid"
+        start_sel = "pid_start" if has_column("pid_start") else "'' AS pid_start"
         n = 0
         for srow in con.execute(
-                f"SELECT session_key, {pid_expr}, expires_at FROM sessions").fetchall():
+                f"SELECT session_key, {pid_sel}, {start_sel}, expires_at FROM sessions").fetchall():
             skey, spid, sstart, sexp = srow["session_key"], srow["session_pid"], srow["pid_start"], srow["expires_at"]
             dead = False
             if spid:

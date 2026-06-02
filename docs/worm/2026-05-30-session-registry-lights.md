@@ -341,3 +341,10 @@ Plan (see design doc "Phase 4: PID-liveness session lifecycle"):
 
 Note: this reuses the "Phase 4" label; the earlier implementation-plan "Phase 4:
 iTerm2 geometry/order" remains unbuilt future work (effectively Phase 5).
+
+Correction (2026-06-02, post-review): the plan bullet above said `SessionEnd`
+"deletes the row immediately". The implementation instead **keeps the Phase 2
+~60s ⚫ afterglow** — `SessionEnd` writes the `ended` state with a 60s TTL and is
+removed by the sweep afterwards (or once its PID dies). Decided during coding to
+preserve existing afterglow behavior; PID-liveness only changes the *unclean*
+exit path. Design doc reconciled to match.

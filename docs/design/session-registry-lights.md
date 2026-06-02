@@ -575,8 +575,10 @@ Schema stays backwards-compatible: older DBs get
   additionally delete PID-less rows whose TTL has expired (preserving today's
   behaviour for the fallback case). Cost is a handful of `kill -0`/`ps` checks
   per write — negligible and off the user-visible path.
-- **`SessionEnd` still deletes promptly.** A clean exit removes the row at once
-  (no 60s afterglow needed); PID-liveness is the backstop for crashes and
+- **`SessionEnd` keeps the short afterglow.** A clean exit writes the `ended`
+  state with the existing ~60s TTL (it does *not* get the never-expire
+  treatment), so the ⚫ afterglow from Phase 2 still fades before the row is
+  swept. PID-liveness is the backstop for the unclean cases — crashes and
   `kill -9`, where no SessionEnd fires but the process is gone.
 - **`tab-chroma sessions prune`** switches from TTL-pruning to the same liveness
   sweep, so the SwiftBar "Prune" button and any manual prune match the writer.
