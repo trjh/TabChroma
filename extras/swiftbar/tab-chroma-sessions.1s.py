@@ -250,7 +250,7 @@ def render_dropdown(rows):
     if bin_path:
         qbin = shell_quote(bin_path)
         lines.append(
-            f"Prune expired | bash={qbin} param1=sessions param2=prune "
+            f"Prune dead | bash={qbin} param1=sessions param2=prune "
             "terminal=false refresh=true"
         )
         lines.append(

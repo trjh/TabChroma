@@ -300,3 +300,44 @@ Validation performed:
 - Verified the SwiftBar plugin emits a clickable row with `param2=focus` and
   `param3=<session_key>`.
 
+
+
+---
+
+## 2026-06-02 — Phase 4 plan: PID-liveness lifecycle (no inactivity expiry)
+
+User reviewed `phase3/swiftbar-focus` (focus works end to end; verified by a
+simulated hook write + `sessions list` + `sessions focus`). New requirement: the
+lights should be a durable map of which agent sessions are still **open** — where
+I was, what to go back to — not a recent-activity feed. Closing the laptop Friday
+and reopening Tuesday must leave still-running sessions lit. So sessions should
+not expire on inactivity; instead the refresh cross-checks the session's PID and
+removes a row only when the process is truly gone.
+
+Decisions (user, 2026-06-02):
+
+- **Stack on `phase3/swiftbar-focus`** rather than a new branch — liveness pruning
+  also fixes the latent Phase 3 tty-recycle mis-focus risk, so they ship together.
+- **PID + start-time guard**, not PID alone — survives sleep (PIDs unchanged) and
+  safely handles a full reboot (recycled PID has a different start time).
+- **Also fix two Phase 3 nits**: make the iTerm session-id secondary match work
+  (compare the GUID suffix of `ITERM_SESSION_ID` against `id of s`), and widen the
+  `sessions list` KEY column so `agent:<uuid>` keys do not wrap.
+
+Plan (see design doc "Phase 4: PID-liveness session lifecycle"):
+
+- Add `session_pid INTEGER` and `pid_start TEXT` columns (back-compat `ALTER
+  TABLE` on next write, same pattern as `tty_device`).
+- Hook captures the agent PID from the nearest tty-owning ancestor (the process
+  `resolve_terminal_device` already walks to) and its `ps -o lstart=` start time.
+- Live rows (resolvable PID) are written with `expires_at = NULL` → never expire,
+  including `done`. Rows with no usable PID keep the TTL backstop.
+- Replace prune-on-write with a **liveness sweep**: delete rows that fail
+  `kill -0` + start-time match; also delete PID-less rows past their TTL.
+- `SessionEnd` deletes the row immediately (clean exit); liveness is the backstop
+  for crashes / `kill -9`.
+- `tab-chroma sessions prune` runs the same liveness sweep.
+- Readers stay read-only; nothing disappears merely because time passed.
+
+Note: this reuses the "Phase 4" label; the earlier implementation-plan "Phase 4:
+iTerm2 geometry/order" remains unbuilt future work (effectively Phase 5).

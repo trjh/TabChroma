@@ -56,21 +56,35 @@ TERMINAL="$(detect_terminal)"
 # iTerm2 session — and target its device node directly. Same user owns that
 # pts, so it is writable. Falls back to /dev/tty for the normal interactive
 # CLI case (where $$ already has a controlling terminal on the first hop).
-resolve_terminal_device() {
+#
+# Sets two globals in one walk:
+#   TTY_DEVICE — first writable controlling tty found (for escape-sequence output)
+#   TTY_PID    — nearest tty-owning ancestor that is NOT this hook process. In
+#                hook mode the hook subtree is detached (no controlling tty), so
+#                this resolves to the long-lived agent (Claude/Codex) process.
+#                It is the session's liveness anchor (Phase 4): it dies on crash
+#                or tab close but survives sleep, and is never a transient
+#                per-invocation wrapper. Never the hook's own pid, so it cannot
+#                be falsely pruned the moment this hook exits.
+resolve_terminal_target() {
   local pid=$$ tt i=0
+  TTY_DEVICE="/dev/tty"
+  TTY_PID=""
   while [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$pid" != "1" ] && [ "$i" -lt 12 ]; do
     tt="$(ps -o tty= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
     if [ -n "$tt" ] && [ "$tt" != "??" ] && [ -w "/dev/$tt" ]; then
-      printf '/dev/%s' "$tt"
-      return 0
+      [ "$TTY_DEVICE" = "/dev/tty" ] && TTY_DEVICE="/dev/$tt"
+      if [ "$pid" != "$$" ]; then
+        TTY_PID="$pid"
+        return 0
+      fi
     fi
     pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
     i=$((i + 1))
   done
-  printf '/dev/tty'
 }
 
-TTY_DEVICE="$(resolve_terminal_device)"
+resolve_terminal_target
 
 # ─── iTerm2 Output Functions ───────────────────────────────────────────────────
 
@@ -186,7 +200,7 @@ TESTING:
 SESSIONS:
   sessions list         Show active agent sessions in the shared registry
   sessions focus <key>  Raise iTerm2 and focus the session
-  sessions prune        Remove expired sessions
+  sessions prune        Remove sessions whose process is gone
   sessions clear        Remove all sessions
   sessions path         Print the registry database path
 
@@ -799,6 +813,41 @@ def has_column(name):
     except sqlite3.OperationalError:
         return False
 
+_start_cache = {}
+
+def ps_start(pid):
+    key = str(pid)
+    if key in _start_cache:
+        return _start_cache[key]
+    try:
+        out = subprocess.run(
+            ["/bin/ps", "-o", "lstart=", "-p", key],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, timeout=2).stdout
+    except Exception:
+        out = ""
+    val = " ".join(out.split())
+    _start_cache[key] = val
+    return val
+
+def pid_alive(pid, start):
+    # Mirror of the hook writer's check: alive iff the PID exists and, when both
+    # start times are known, they still match (guards against PID reuse).
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    except Exception:
+        return False
+    if not start:
+        return True
+    cur = ps_start(pid)
+    return (not cur) or cur == start
+
 def session_row(key):
     tty_expr = "tty_device" if has_column("tty_device") else "'' AS tty_device"
     return con.execute(
@@ -808,37 +857,38 @@ def session_row(key):
     ).fetchone()
 
 def focus_iterm(row):
+    # Match on tty_device only. iTerm2's AppleScript `id of s` is a different
+    # GUID from `ITERM_SESSION_ID`, so the stored `terminal` cannot be matched
+    # this way; the resolved tty path (e.g. /dev/ttys003) is the reliable key
+    # and also pins the exact pane within a split.
     tty = (row["tty_device"] or "").strip()
-    terminal = (row["terminal"] or "").strip()
     label = row["label"] or row["cwd"] or row["session_key"]
+    if not tty:
+        subprocess.run(["/usr/bin/open", "-a", "iTerm"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(f"Activated iTerm; no tty recorded for {label} to match on.", file=sys.stderr)
+        return 1
     script = r'''
 on run argv
   set targetTty to item 1 of argv
-  set targetTerminal to item 2 of argv
   tell application "iTerm2"
     activate
     repeat with w in windows
       repeat with t in tabs of w
         repeat with s in sessions of t
-          set matched to false
           try
-            if targetTty is not "" and ((tty of s) as text) is targetTty then set matched to true
+            if ((tty of s) as text) is targetTty then
+              try
+                select w
+              end try
+              try
+                select t
+              end try
+              try
+                select s
+              end try
+              return "focused"
+            end if
           end try
-          try
-            if not matched and targetTerminal is not "" and ((id of s) as text) is targetTerminal then set matched to true
-          end try
-          if matched then
-            try
-              select w
-            end try
-            try
-              select t
-            end try
-            try
-              select s
-            end try
-            return "focused"
-          end if
         end repeat
       end repeat
     end repeat
@@ -848,7 +898,7 @@ end run
 '''
     try:
         result = subprocess.run(
-            ["/usr/bin/osascript", "-e", script, tty, terminal],
+            ["/usr/bin/osascript", "-e", script, tty],
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -873,11 +923,24 @@ try:
         con.commit()
         print(f"Cleared {n} session(s).")
     elif sub == "prune":
-        n = con.execute(
-            "DELETE FROM sessions WHERE expires_at IS NOT NULL AND expires_at < ?",
-            (now,)).rowcount
+        # Liveness sweep, mirroring the hook writer: drop rows whose process is
+        # gone, plus PID-less rows past their TTL backstop.
+        have_pid = has_column("session_pid")
+        pid_expr = "session_pid, pid_start" if have_pid else "NULL AS session_pid, '' AS pid_start"
+        n = 0
+        for srow in con.execute(
+                f"SELECT session_key, {pid_expr}, expires_at FROM sessions").fetchall():
+            skey, spid, sstart, sexp = srow["session_key"], srow["session_pid"], srow["pid_start"], srow["expires_at"]
+            dead = False
+            if spid:
+                dead = not pid_alive(spid, sstart or "")
+            if not dead and sexp is not None and sexp < now:
+                dead = True
+            if dead:
+                con.execute("DELETE FROM sessions WHERE session_key = ?", (skey,))
+                n += 1
         con.commit()
-        print(f"Pruned {n} expired session(s).")
+        print(f"Pruned {n} dead session(s).")
     elif sub == "focus":
         if not args:
             print("usage: tab-chroma sessions focus <session_key>", file=sys.stderr)
@@ -895,11 +958,11 @@ try:
         if not rows:
             print("No active sessions.")
             sys.exit(0)
-        print(f"{'KEY':<28} {'AGENT':<7} {'STATE':<10} {'LABEL':<18} {'AGE':<6} CWD")
+        print(f"{'KEY':<45} {'AGENT':<7} {'STATE':<10} {'LABEL':<18} {'AGE':<6} CWD")
         for key, agent, state, label, cwd, upd in rows:
             age = now - (upd or now)
             age_s = f"{age}s" if age < 60 else (f"{age//60}m" if age < 3600 else f"{age//3600}h")
-            print(f"{key:<28} {agent:<7} {state:<10} {(label or ''):<18} {age_s:<6} {cwd or ''}")
+            print(f"{key:<45} {agent:<7} {state:<10} {(label or ''):<18} {age_s:<6} {cwd or ''}")
 except sqlite3.OperationalError as e:
     print(f"registry error: {e}", file=sys.stderr)
     sys.exit(1)
@@ -987,8 +1050,9 @@ process_hook() {
   TAB_CHROMA_AGENT="${TAB_CHROMA_AGENT:-}" \
   TAB_CHROMA_REGISTRY_DB="$REGISTRY_DB" \
   TAB_CHROMA_TTY_DEVICE="$TTY_DEVICE" \
+  TAB_CHROMA_TTY_PID="$TTY_PID" \
   python3 - << 'PYEOF'
-import sys, json, os, time, shlex
+import sys, json, os, time, shlex, subprocess
 
 input_data = os.environ.get("TAB_CHROMA_INPUT", "")
 config_path = os.environ.get("TAB_CHROMA_CONFIG", "")
@@ -1193,19 +1257,75 @@ try:
         else:
             session_key = f"{agent}:{cwd}:{terminal}"
 
-        # Registry state + fallback TTL backstop (seconds). The TTL is only a
-        # safety net for sessions that die without a clean end; deterministic
-        # signals (SessionEnd, next state change) are the real lifecycle.
+        # Phase 4 liveness anchor: the agent (Claude/Codex) PID, resolved by
+        # the tree-walk in resolve_terminal_target. While it is alive the row
+        # never expires on inactivity — the lights stay a durable map of which
+        # sessions are still open. A recorded start time guards against PID
+        # reuse across a reboot (sleep leaves PIDs intact).
+        tty_pid_raw = (os.environ.get("TAB_CHROMA_TTY_PID") or "").strip()
+        _start_cache = {}
+
+        def _ps_start(pid):
+            # Stable process start-time string; compared verbatim, never parsed.
+            key = str(pid)
+            if key in _start_cache:
+                return _start_cache[key]
+            try:
+                out = subprocess.run(
+                    ["/bin/ps", "-o", "lstart=", "-p", key],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    text=True, timeout=2).stdout
+            except Exception:
+                out = ""
+            val = " ".join(out.split())
+            _start_cache[key] = val
+            return val
+
+        def _pid_alive(pid, start):
+            # Alive iff the PID exists AND (when both start times are known) its
+            # start time still matches. Biased against false-dead: an
+            # unverifiable start time trusts kill(0) rather than pruning a row.
+            if not pid:
+                return False
+            try:
+                os.kill(int(pid), 0)
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                pass
+            except Exception:
+                return False
+            if not start:
+                return True
+            cur = _ps_start(pid)
+            return (not cur) or cur == start
+
+        session_pid = None
+        pid_start = ""
+        if tty_pid_raw.isdigit() and _pid_alive(tty_pid_raw, ""):
+            session_pid = int(tty_pid_raw)
+            pid_start = _ps_start(session_pid)
+
+        # Registry state + fallback TTL backstop (seconds). For PID-anchored
+        # rows the TTL is unused (expires_at is NULL); it is the lifecycle only
+        # for rows with no usable PID, and the brief SessionEnd afterglow.
         now_i = int(now)
         if event == "SessionEnd":
-            reg_state, ttl = "ended", 60                 # ~60s afterglow, then pruned
+            reg_state, ttl = "ended", 60                 # ~60s afterglow, then swept
         elif state_name == "session.start":
             reg_state, ttl = "starting", 600             # 10 min if no activity follows
         elif state_name == "done":
             reg_state, ttl = "done", 12 * 3600           # green until exit; 12h backstop
         else:
             reg_state, ttl = state_name, 2 * 3600        # working/permission/attention
-        expires_at = now_i + ttl
+
+        # A live, PID-anchored session persists until its process is gone, so
+        # it never expires on idle time alone. SessionEnd keeps its short TTL so
+        # the ⚫ afterglow still fades; PID-less rows keep the TTL backstop.
+        if session_pid is not None and event != "SessionEnd":
+            expires_at = None
+        else:
+            expires_at = now_i + ttl
 
         # Only create a parent dir when the path actually has one. A
         # basename-only override (e.g. TAB_CHROMA_REGISTRY_DB=sessions.sqlite3)
@@ -1232,11 +1352,17 @@ try:
                 started_at INTEGER,
                 updated_at INTEGER NOT NULL,
                 expires_at INTEGER,
+                session_pid INTEGER,
+                pid_start TEXT,
                 metadata_json TEXT)""")
             try:
                 columns = {row[1] for row in con.execute("PRAGMA table_info(sessions)")}
                 if "tty_device" not in columns:
                     con.execute("ALTER TABLE sessions ADD COLUMN tty_device TEXT")
+                if "session_pid" not in columns:
+                    con.execute("ALTER TABLE sessions ADD COLUMN session_pid INTEGER")
+                if "pid_start" not in columns:
+                    con.execute("ALTER TABLE sessions ADD COLUMN pid_start TEXT")
             except Exception:
                 pass
             con.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at)")
@@ -1245,16 +1371,32 @@ try:
             # from the original INSERT across the whole session lifetime.
             con.execute("""INSERT INTO sessions
                 (session_key, agent, agent_session_id, state, label, cwd, terminal, tty_device,
-                 theme, color_r, color_g, color_b, started_at, updated_at, expires_at, metadata_json)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 theme, color_r, color_g, color_b, started_at, updated_at, expires_at,
+                 session_pid, pid_start, metadata_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(session_key) DO UPDATE SET
                   state=excluded.state, label=excluded.label, cwd=excluded.cwd,
                   terminal=excluded.terminal, tty_device=excluded.tty_device, theme=excluded.theme,
                   color_r=excluded.color_r, color_g=excluded.color_g, color_b=excluded.color_b,
-                  updated_at=excluded.updated_at, expires_at=excluded.expires_at""",
+                  updated_at=excluded.updated_at, expires_at=excluded.expires_at,
+                  session_pid=excluded.session_pid, pid_start=excluded.pid_start""",
                 (session_key, agent, session_id, reg_state, project_name or label, cwd,
-                 terminal, tty_device, theme_name, r, g, b, now_i, now_i, expires_at, None))
-            con.execute("DELETE FROM sessions WHERE expires_at IS NOT NULL AND expires_at < ?", (now_i,))
+                 terminal, tty_device, theme_name, r, g, b, now_i, now_i, expires_at,
+                 session_pid, pid_start, None))
+            # Liveness sweep (Phase 4): drop rows whose process is gone, plus
+            # PID-less rows past their TTL backstop. Replaces the old purely
+            # time-based prune so live sessions survive arbitrarily long idle
+            # gaps (a closed laptop) and dead ones (crash, tab close) clear out.
+            for skey, spid, sstart, sexp in con.execute(
+                    "SELECT session_key, session_pid, pid_start, expires_at "
+                    "FROM sessions").fetchall():
+                dead = False
+                if spid:
+                    dead = not _pid_alive(spid, sstart or "")
+                if not dead and sexp is not None and sexp < now_i:
+                    dead = True
+                if dead:
+                    con.execute("DELETE FROM sessions WHERE session_key = ?", (skey,))
             con.commit()
         finally:
             con.close()
