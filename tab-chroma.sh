@@ -856,6 +856,21 @@ def session_row(key):
         (key, key),
     ).fetchone()
 
+def notify(text):
+    # Best-effort macOS banner so a SwiftBar background click (terminal=false) is
+    # never silent on failure — the click otherwise gives no UI, which reads as
+    # "nothing happened". `display notification` controls no other app, so it is
+    # NOT gated by Automation TCC and still fires when *iTerm* control is the
+    # thing being denied.
+    try:
+        subprocess.run(
+            ["/usr/bin/osascript", "-e",
+             'on run a\ndisplay notification (item 1 of a) with title "TabChroma"\nend run',
+             text],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+    except Exception:
+        pass
+
 def focus_iterm(row):
     # Match on tty_device only. iTerm2's AppleScript `id of s` is a different
     # GUID from `ITERM_SESSION_ID`, so the stored `terminal` cannot be matched
@@ -864,8 +879,10 @@ def focus_iterm(row):
     tty = (row["tty_device"] or "").strip()
     label = row["label"] or row["cwd"] or row["session_key"]
     if not tty:
+        msg = f"No terminal recorded yet for {label} — it becomes focusable after its next activity."
+        notify(msg)
+        print(msg, file=sys.stderr)
         subprocess.run(["/usr/bin/open", "-a", "iTerm"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print(f"Activated iTerm; no tty recorded for {label} to match on.", file=sys.stderr)
         return 1
     script = r'''
 on run argv
@@ -905,15 +922,30 @@ end run
             timeout=5,
         )
     except Exception as e:
+        msg = f"Couldn't run osascript to focus {label}: {e}"
+        notify(msg)
+        print(msg, file=sys.stderr)
         subprocess.run(["/usr/bin/open", "-a", "iTerm"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print(f"Could not focus {label}: {e}", file=sys.stderr)
         return 1
     if result.returncode == 0 and result.stdout.strip() == "focused":
         print(f"Focused {label}")
         return 0
+    # Loud failure: a notification (so a background SwiftBar click isn't silent)
+    # plus stderr, with a TCC-specific, actionable hint when iTerm control is
+    # denied — the common first-run case.
+    err = (result.stderr or "").strip()
+    low = err.lower()
+    if result.returncode != 0 and ("-1743" in err or "not author" in low
+                                   or "not allowed" in low or "assistive" in low):
+        msg = ("iTerm control is blocked. Allow it under System Settings > Privacy "
+               "& Security > Automation > SwiftBar > iTerm, then click the session again.")
+    elif result.stdout.strip() == "not-found":
+        msg = f"Couldn't find {label}'s tab ({tty}) — it may have been closed."
+    else:
+        msg = f"Couldn't focus {label} ({err or 'unknown error'})."
+    notify(msg)
+    print(msg, file=sys.stderr)
     subprocess.run(["/usr/bin/open", "-a", "iTerm"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    detail = (result.stderr or result.stdout or "not found").strip()
-    print(f"Activated iTerm, but could not find session {row['session_key']} ({detail}).", file=sys.stderr)
     return 1
 
 try:

@@ -79,10 +79,19 @@ to select the window/tab/pane on that tty.
 
 This is best-effort:
 
-- iTerm2 must be running and may ask macOS for Automation permission the first
-  time TabChroma controls it.
+- iTerm2 must be running. The **first** click usually triggers a macOS prompt to
+  let SwiftBar control iTerm — allow it (System Settings ▸ Privacy & Security ▸
+  Automation ▸ SwiftBar ▸ iTerm). The very first focus can take a second or two,
+  so give it a moment before assuming it failed.
+- When focus *fails* (iTerm control still blocked, or the tab was closed), the
+  click is not silent: TabChroma posts a macOS notification and, for a blocked
+  permission, tells you exactly where to grant it. A successful focus just makes
+  iTerm jump to the tab — no notification.
 - Matching is strongest for ordinary iTerm2 tabs/panes because the registry
   stores the resolved tty path, e.g. `/dev/ttys003`.
+- A session only becomes focusable once it has recorded a tty — i.e. after at
+  least one hook fires under the current build. A long-idle session from before
+  an upgrade shows up but only raises iTerm until its next activity refreshes it.
 - If several agent sessions share one terminal through tmux or similar, focusing
   can only raise that shared terminal session.
 - If no exact match is found, TabChroma still activates iTerm2 so you are close
