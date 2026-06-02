@@ -21,7 +21,7 @@
 # Environment overrides:
 #   TAB_CHROMA_REGISTRY_DB   path to sessions.sqlite3 (default: Application Support)
 #   TAB_CHROMA_LIGHTS_COLLAPSE  collapse threshold (default 8; 0 disables collapse)
-#   TAB_CHROMA_BIN           path to tab-chroma.sh for the prune/clear actions
+#   TAB_CHROMA_BIN           path to tab-chroma.sh for focus/prune/clear actions
 
 import os
 import sqlite3
@@ -78,6 +78,11 @@ def sanitize(text):
     return str(text).replace("|", "¦").replace("\n", " ").replace("\r", " ")
 
 
+def shell_quote(text):
+    """Single-quote a value for SwiftBar/xbar bash/param fields."""
+    return "'" + str(text).replace("'", "'\\''") + "'"
+
+
 def agent_prefix(agent):
     return AGENT_PREFIX.get(agent, (agent[:1].upper() or "?"))
 
@@ -132,7 +137,7 @@ def read_sessions():
         return None
     try:
         rows = con.execute(
-            "SELECT agent, state, label, cwd, agent_session_id, "
+            "SELECT session_key, agent, state, label, cwd, agent_session_id, "
             "       color_r, color_g, color_b, updated_at "
             "FROM sessions "
             "WHERE expires_at IS NULL OR expires_at >= ? "
@@ -156,7 +161,7 @@ def read_sessions():
 
 
 def sort_key(row):
-    agent, state, updated = row[0], row[1], row[8] or 0
+    agent, state, updated = row[1], row[2], row[9] or 0
     return (AGENT_ORDER.get(agent, 99), agent, STATE_ORDER.get(state, 99), -updated)
 
 
@@ -178,31 +183,32 @@ def render_menu_bar(rows):
         if collapsed:
             # One ×count per (agent, state) run.
             groups = []  # [agent, state, count]
-            for agent, state in ((r[0], r[1]) for r in ordered):
+            for agent, state in ((r[1], r[2]) for r in ordered):
                 if groups and groups[-1][0] == agent and groups[-1][1] == state:
                     groups[-1][2] += 1
                 else:
                     groups.append([agent, state, 1])
             tokens = [f"{agent_prefix(a)}{emoji(s)}×{n}" for a, s, n in groups]
         else:
-            tokens = [f"{agent_prefix(r[0])}{emoji(r[1])}" for r in ordered]
+            tokens = [f"{agent_prefix(r[1])}{emoji(r[2])}" for r in ordered]
     else:
         # Circles only: most-urgent state first, then most-recently-updated.
-        ordered = sorted(rows, key=lambda r: (STATE_ORDER.get(r[1], 99), -(r[8] or 0)))
+        ordered = sorted(rows, key=lambda r: (STATE_ORDER.get(r[2], 99), -(r[9] or 0)))
         if collapsed:
             counts = {}
             for r in ordered:
-                counts[r[1]] = counts.get(r[1], 0) + 1
+                counts[r[2]] = counts.get(r[2], 0) + 1
             states = sorted(counts, key=lambda s: STATE_ORDER.get(s, 99))
             tokens = [f"{emoji(s)}×{counts[s]}" for s in states]
         else:
-            tokens = [emoji(r[1]) for r in ordered]
+            tokens = [emoji(r[2]) for r in ordered]
     return " ".join(tokens)
 
 
 def render_dropdown(rows):
     lines = ["---"]
     now = int(time.time())
+    bin_path = find_tab_chroma_bin()
 
     if rows:
         collapsed = bool(COLLAPSE_THRESHOLD) and len(rows) > COLLAPSE_THRESHOLD
@@ -211,7 +217,7 @@ def render_dropdown(rows):
             header += " (menu bar collapsed)"
         lines.append(f"{header} | size=11 color=#888888")
         for r in sorted(rows, key=sort_key):
-            agent, state, label, cwd, sid, cr, cg, cb, updated = r
+            key, agent, state, label, cwd, sid, cr, cg, cb, updated = r
             label = sanitize(label or "(no label)")
             age = fmt_age(now - (updated or now))
             row_text = f"{agent_prefix(agent)}{emoji(state)}  {label} — {state} ({age})"
@@ -219,10 +225,21 @@ def render_dropdown(rows):
             params = ["font=Menlo", "size=12"]
             if color:
                 params.append(f"color={color}")
+            if bin_path:
+                params.extend([
+                    f"bash={shell_quote(bin_path)}",
+                    "param1=sessions",
+                    "param2=focus",
+                    f"param3={shell_quote(key)}",
+                    "terminal=false",
+                    "refresh=true",
+                ])
             lines.append(f"{row_text} | " + " ".join(params))
-            # Detail submenu rows (indented with '--').
+            # Detail submenu rows (indented with '--'). Keep these passive so a
+            # user can copy/inspect without accidentally focusing.
             if cwd:
                 lines.append(f"-- {sanitize(cwd)} | font=Menlo size=11 color=#888888")
+            lines.append(f"-- {sanitize(key)} | font=Menlo size=11 color=#888888")
             lines.append(f"-- {sanitize(agent)}:{sanitize(sid or '(no id)')} | font=Menlo size=11 color=#888888")
     else:
         lines.append("No active sessions | color=#888888")
@@ -230,24 +247,23 @@ def render_dropdown(rows):
     # Actions footer.
     lines.append("---")
     lines.append("Refresh | refresh=true")
-    bin_path = find_tab_chroma_bin()
     if bin_path:
+        qbin = shell_quote(bin_path)
         lines.append(
-            f"Prune expired | bash='{bin_path}' param1=sessions param2=prune "
+            f"Prune dead | bash={qbin} param1=sessions param2=prune "
             "terminal=false refresh=true"
         )
         lines.append(
-            f"Clear all | bash='{bin_path}' param1=sessions param2=clear "
+            f"Clear all | bash={qbin} param1=sessions param2=clear "
             "terminal=false refresh=true"
         )
     reg_dir = os.path.dirname(DB_PATH)
     if reg_dir:
         lines.append(
-            f"Open registry folder | bash=/usr/bin/open param1='{reg_dir}' terminal=false"
+            f"Open registry folder | bash=/usr/bin/open param1={shell_quote(reg_dir)} terminal=false"
         )
-    lines.append(f"Registry: {DB_PATH} | size=10 color=#888888")
+    lines.append(f"Registry: {sanitize(DB_PATH)} | size=10 color=#888888")
     return lines
-
 
 def main():
     rows = read_sessions()

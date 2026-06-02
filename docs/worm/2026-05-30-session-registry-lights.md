@@ -226,3 +226,125 @@ On branch `phase2/swiftbar-session-lights`. Added a menu-bar reader:
 This is where storing RGB in the registry (a Phase 0 decision) paid off: the
 reader colors each dropdown row to the active theme with zero theme-resolution
 logic of its own.
+
+---
+
+## 2026-05-31 — Phase 3 design pass: click a SwiftBar session to focus iTerm2
+
+User asked whether selecting a SwiftBar menu item can raise the iTerm2 window/tab
+for the referenced Claude/Codex session, then requested a branch with design,
+WORM log, README-first implementation.
+
+Design intent:
+
+- Make each SwiftBar session row clickable.
+- Clicking a row invokes `tab-chroma sessions focus <session_key>`.
+- The focus command reads the shared SQLite registry, finds terminal identity
+  for that session, activates iTerm2, and selects the matching tab/session when
+  possible.
+- Keep the SwiftBar plugin itself read-only against SQLite; it only launches
+  `tab-chroma` actions.
+- Store a stronger terminal identity in the registry:
+  - `terminal`: existing iTerm/Terminal environment id (`ITERM_SESSION_ID` or
+    `TERM_SESSION_ID`).
+  - `tty_device`: resolved writable tty path, e.g. `/dev/ttys003`, used as the
+    first matching key for iTerm2 AppleScript.
+- Use AppleScript as the first implementation because it is available on macOS
+  without extra dependencies. A later pass can use the iTerm2 Python API if that
+  gives better identifiers/geometry.
+- Make focus best-effort:
+  - If there is no registry row, return an error.
+  - If iTerm2 is not running or the tab cannot be matched, activate iTerm2 as a
+    fallback and report that the session was not found.
+  - Do not affect hook behavior; focus is only a CLI/SwiftBar action.
+
+Known caveats:
+
+- iTerm2 AppleScript support and macOS Automation permissions may be required.
+- Matching by tty is strong for ordinary iTerm2 tabs/panes but can be ambiguous
+  if multiple agent sessions share one terminal through tmux or similar.
+- `ITERM_SESSION_ID` is retained for future iTerm2 Python API / geometry work,
+  but the first focusing pass prefers `tty_device`.
+
+
+---
+
+## 2026-05-31 — Phase 3 implementation notes
+
+Implemented the first click-to-focus pass on branch `phase3/swiftbar-focus`.
+
+Changes:
+
+- `tab-chroma.sh`
+  - Added `tab-chroma sessions focus <session_key>`.
+  - Added `tty_device` to the SQLite registry. Existing DBs are migrated with
+    `ALTER TABLE sessions ADD COLUMN tty_device TEXT` on the next hook write.
+  - Hook writes now pass the resolved `TTY_DEVICE` into the registry writer.
+  - `sessions list` now prints `session_key`, making manual focus testing easy.
+- `extras/swiftbar/tab-chroma-sessions.1s.py`
+  - Reads `session_key` from the registry.
+  - Makes each top-level session row clickable when `TAB_CHROMA_BIN` or an
+    installed `tab-chroma` binary can be found.
+  - Keeps detail submenu rows passive.
+  - Keeps registry access read-only.
+- `extras/swiftbar/README.md`
+  - Documents click-to-focus behavior, caveats, and manual testing.
+
+Validation performed:
+
+- `bash -n tab-chroma.sh install.sh uninstall.sh`
+- `python3 -m py_compile extras/swiftbar/tab-chroma-sessions.1s.py`
+- Simulated hook write into a temporary registry DB.
+- Verified `tty_device` exists in the DB schema.
+- Verified `tab-chroma sessions list` shows the session key.
+- Verified the SwiftBar plugin emits a clickable row with `param2=focus` and
+  `param3=<session_key>`.
+
+
+
+---
+
+## 2026-06-02 — Phase 4 plan: PID-liveness lifecycle (no inactivity expiry)
+
+User reviewed `phase3/swiftbar-focus` (focus works end to end; verified by a
+simulated hook write + `sessions list` + `sessions focus`). New requirement: the
+lights should be a durable map of which agent sessions are still **open** — where
+I was, what to go back to — not a recent-activity feed. Closing the laptop Friday
+and reopening Tuesday must leave still-running sessions lit. So sessions should
+not expire on inactivity; instead the refresh cross-checks the session's PID and
+removes a row only when the process is truly gone.
+
+Decisions (user, 2026-06-02):
+
+- **Stack on `phase3/swiftbar-focus`** rather than a new branch — liveness pruning
+  also fixes the latent Phase 3 tty-recycle mis-focus risk, so they ship together.
+- **PID + start-time guard**, not PID alone — survives sleep (PIDs unchanged) and
+  safely handles a full reboot (recycled PID has a different start time).
+- **Also fix two Phase 3 nits**: make the iTerm session-id secondary match work
+  (compare the GUID suffix of `ITERM_SESSION_ID` against `id of s`), and widen the
+  `sessions list` KEY column so `agent:<uuid>` keys do not wrap.
+
+Plan (see design doc "Phase 4: PID-liveness session lifecycle"):
+
+- Add `session_pid INTEGER` and `pid_start TEXT` columns (back-compat `ALTER
+  TABLE` on next write, same pattern as `tty_device`).
+- Hook captures the agent PID from the nearest tty-owning ancestor (the process
+  `resolve_terminal_device` already walks to) and its `ps -o lstart=` start time.
+- Live rows (resolvable PID) are written with `expires_at = NULL` → never expire,
+  including `done`. Rows with no usable PID keep the TTL backstop.
+- Replace prune-on-write with a **liveness sweep**: delete rows that fail
+  `kill -0` + start-time match; also delete PID-less rows past their TTL.
+- `SessionEnd` deletes the row immediately (clean exit); liveness is the backstop
+  for crashes / `kill -9`.
+- `tab-chroma sessions prune` runs the same liveness sweep.
+- Readers stay read-only; nothing disappears merely because time passed.
+
+Note: this reuses the "Phase 4" label; the earlier implementation-plan "Phase 4:
+iTerm2 geometry/order" remains unbuilt future work (effectively Phase 5).
+
+Correction (2026-06-02, post-review): the plan bullet above said `SessionEnd`
+"deletes the row immediately". The implementation instead **keeps the Phase 2
+~60s ⚫ afterglow** — `SessionEnd` writes the `ended` state with a 60s TTL and is
+removed by the sweep afterwards (or once its PID dies). Decided during coding to
+preserve existing afterglow behavior; PID-liveness only changes the *unclean*
+exit path. Design doc reconciled to match.

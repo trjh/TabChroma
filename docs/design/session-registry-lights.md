@@ -449,6 +449,174 @@ Open questions:
 - How should multiple panes/splits within one tab be represented?
 - If a session moves between tabs/windows, does the registry key remain correct?
 
+
+## Phase 3: SwiftBar click-to-focus design
+
+Goal: selecting a session in the SwiftBar/xbar dropdown should raise iTerm2 and
+select the window/tab/session that owns that agent session.
+
+### User experience
+
+The menu bar still shows compact lights. The dropdown changes from passive rows
+to clickable rows:
+
+```text
+🔵  TabChroma — working (3s) | bash=/path/to/tab-chroma param1=sessions param2=focus param3=claude:abc123 terminal=false refresh=true
+-- /Users/timh/TabChroma
+-- claude:abc123
+```
+
+Clicking the top row for a session runs:
+
+```bash
+tab-chroma sessions focus <session_key>
+```
+
+### Registry identity
+
+The existing registry already stores `terminal`, populated from
+`ITERM_SESSION_ID` or `TERM_SESSION_ID`. Phase 3 adds `tty_device` so the
+registry stores both:
+
+- `terminal`: agent terminal/session environment id for future matching.
+- `tty_device`: resolved tty path such as `/dev/ttys003`, used by the first
+  focus implementation.
+
+The schema remains backwards-compatible: installations with an older DB get
+`ALTER TABLE sessions ADD COLUMN tty_device TEXT` on the next hook write.
+
+### Focus command
+
+`tab-chroma sessions focus <session_key>` should:
+
+1. Read the registry row by `session_key`.
+2. Prefer matching iTerm2 sessions by `tty_device`.
+3. Keep `terminal` / `ITERM_SESSION_ID` available as a secondary/future match key.
+4. Activate iTerm2.
+5. Select the matching window/tab/session.
+6. Fall back to `open -a iTerm` / `open -a iTerm2` if no precise match is found.
+
+### Implementation choice
+
+Use AppleScript first because it is built into macOS and does not add a new
+runtime dependency. A later implementation can switch to or augment with the
+iTerm2 Python API if that provides more reliable IDs and geometry.
+
+### Failure policy
+
+Focusing is best-effort and interactive. It may print a useful error to stderr
+when invoked manually, unlike hook mode where output must stay silent. Failure to
+focus must never affect hook processing or registry writes.
+
+### Future geometry ordering
+
+The same identity fields (`tty_device`, `terminal`) are prerequisites for the
+future left-to-right ordering pass. Once iTerm2 windows/tabs can be matched, a
+background/order command can annotate rows with `window_id`, `tab_id`, and
+`display_order`.
+
+## Phase 4: PID-liveness session lifecycle (no inactivity expiry)
+
+Stacked on the Phase 3 (`phase3/swiftbar-focus`) branch.
+
+Goal: the lights should be a durable map of **which agent sessions are still
+open** — where I was and what I have to go back to — not a recent-activity
+feed. A session must stay lit for as long as its process is actually alive, and
+disappear only when the process is truly gone. Closing the laptop on Friday and
+reopening it Tuesday should leave every still-running session lit.
+
+### Problem with the current model
+
+Every registry write sets `expires_at = now + ttl` (working/permission/attention
+2h, `done` 12h, `starting` 10min, `ended` 60s), and `sessions list` / the
+SwiftBar reader filter on `expires_at >= now`, with a prune-expired DELETE on
+every hook write. A dormant-but-alive session therefore vanishes purely from the
+passage of time. It also lets a **stale `tty_device` get reused** by an unrelated
+shell, which would make Phase 3 focus the wrong pane — so liveness pruning is a
+correctness fix for focus, not just a UX preference.
+
+### Liveness, not a timer
+
+Closing the lid (sleep) does **not** kill processes or renumber PIDs, so a PID
+liveness check survives exactly the Fri→Tue scenario. The one hazard is a full
+**reboot**, where the OS recycles old PIDs onto unrelated processes; a naive
+`kill -0` would then report a dead session as alive and focus garbage.
+
+Guard against recycling by storing the process **start time** alongside the PID
+and requiring both to match:
+
+- `session_pid` — PID of the agent process (the nearest tty-owning ancestor the
+  hook already walks to in `resolve_terminal_device`; that is the Claude/Codex
+  process, not the hook subprocess).
+- `pid_start` — that PID's start time, captured as a stable string
+  (`ps -o lstart= -p PID`, whitespace-normalised). This is the recycle guard: a
+  reused PID will have a different start time.
+
+A row is **alive** iff `session_pid` is set, `kill -0 session_pid` succeeds, and
+the current `ps` start time for that PID still equals `pid_start`. Otherwise it
+is **dead**.
+
+Schema stays backwards-compatible: older DBs get
+`ALTER TABLE sessions ADD COLUMN session_pid INTEGER` and
+`ADD COLUMN pid_start TEXT` on the next hook write (same pattern as
+`tty_device`).
+
+### Lifecycle rules
+
+- **Live sessions never expire.** When the hook records a row whose PID it can
+  resolve, it writes `expires_at = NULL`. The row persists until its process
+  dies, regardless of how long it sits idle — including `done` rows, which is
+  precisely the "what I have to go back to" indicator.
+- **TTL becomes a fallback only.** If the hook cannot resolve a usable PID
+  (unexpected environment, no tty ancestor), it keeps the existing TTL backstop
+  so such rows still self-clean. PID-bearing rows ignore TTL.
+- **Sweep on write replaces prune-on-write.** On each hook write, after the
+  upsert, sweep every row: delete rows that are dead by the liveness test, and
+  additionally delete PID-less rows whose TTL has expired (preserving today's
+  behaviour for the fallback case). Cost is a handful of `kill -0`/`ps` checks
+  per write — negligible and off the user-visible path.
+- **`SessionEnd` keeps the short afterglow.** A clean exit writes the `ended`
+  state with the existing ~60s TTL (it does *not* get the never-expire
+  treatment), so the ⚫ afterglow from Phase 2 still fades before the row is
+  swept. PID-liveness is the backstop for the unclean cases — crashes and
+  `kill -9`, where no SessionEnd fires but the process is gone.
+- **`tab-chroma sessions prune`** switches from TTL-pruning to the same liveness
+  sweep, so the SwiftBar "Prune" button and any manual prune match the writer.
+- **Readers** (`sessions list`, SwiftBar plugin) keep showing rows the sweep has
+  not removed. They stay read-only; they do not run the liveness test
+  themselves, so a long-idle laptop with no hook events simply keeps showing the
+  last-known live set until the next write sweeps it. That is the desired
+  behaviour — nothing disappears merely because time passed.
+
+### Caveats
+
+- Cross-host: PIDs are only meaningful on the machine that wrote them. The
+  registry is already per-machine (Application Support), so this is moot in
+  practice.
+- A session that is force-killed while the laptop is asleep will be detected as
+  dead on the next hook write from any session, not instantly — acceptable, the
+  light just lingers until the next sweep.
+- The start-time string format is platform-specific (`ps -o lstart=` on macOS);
+  we store and compare it verbatim rather than parsing it, so format drift
+  between captures within one boot is not a concern.
+
+### Failure policy
+
+Unchanged from the rest of the registry: the whole block stays inside the
+hook's `try/except`, writes nothing to stdout, and any `ps`/`kill` failure
+degrades to "treat as the TTL fallback" rather than breaking the hook.
+
+### Bundled nits fixed alongside
+
+- **iTerm session-id secondary match (Phase 3 nit).** Intended to fix it by
+  comparing GUID suffixes, but empirically iTerm2's AppleScript `id of s` is a
+  *different* GUID from `ITERM_SESSION_ID` (not a prefixed form of the same one),
+  so the two can never compare equal. The secondary match was therefore dead
+  code that could only mislead. Removed it; `focus` now matches on `tty_device`
+  alone, which is the reliable key and also pins the exact pane within a split.
+  (`terminal` stays stored for possible future iTerm-variable-based matching.)
+- **`sessions list` KEY column** widened so `agent:<uuid>` keys do not wrap.
+
 ## Implementation plan
 
 ### Phase 0: design-only branch

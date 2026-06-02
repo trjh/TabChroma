@@ -19,8 +19,10 @@ C🔵 C🟢 X🔴
 | ⚫ | ended (brief afterglow before the row is pruned) |
 
 Clicking the menu-bar item drops down a list of every session (agent, label,
-state, age) with its working directory and session id, plus actions to refresh,
-prune expired sessions, clear the registry, and open the registry folder.
+state, age) with its working directory and session id. **Click a session row to
+raise iTerm2 and focus the tab/session it belongs to**. The dropdown also has
+actions to refresh, prune dead sessions, clear the registry, and open the
+registry folder.
 
 ## Prerequisites
 
@@ -62,6 +64,46 @@ relaunch SwiftBar.
 The `.1s.py` in the filename is the **refresh interval** (1 second). To poll
 less often, rename the copy, e.g. `tab-chroma-sessions.2s.py` or `.5s.py`.
 
+
+## Focus iTerm2 from a session row
+
+Each active session row is clickable. Selecting it runs:
+
+```bash
+tab-chroma sessions focus <session_key>
+```
+
+TabChroma reads the shared registry, looks up the resolved tty path recorded by
+the hook (`tty_device`, e.g. `/dev/ttys003`), activates iTerm2, and asks iTerm2
+to select the window/tab/pane on that tty.
+
+This is best-effort:
+
+- iTerm2 must be running. The **first** click usually triggers a macOS prompt to
+  let SwiftBar control iTerm — allow it (System Settings ▸ Privacy & Security ▸
+  Automation ▸ SwiftBar ▸ iTerm). The very first focus can take a second or two,
+  so give it a moment before assuming it failed.
+- When focus *fails* (iTerm control still blocked, or the tab was closed), the
+  click is not silent: TabChroma posts a macOS notification and, for a blocked
+  permission, tells you exactly where to grant it. A successful focus just makes
+  iTerm jump to the tab — no notification.
+- Matching is strongest for ordinary iTerm2 tabs/panes because the registry
+  stores the resolved tty path, e.g. `/dev/ttys003`.
+- A session only becomes focusable once it has recorded a tty — i.e. after at
+  least one hook fires under the current build. A long-idle session from before
+  an upgrade shows up but only raises iTerm until its next activity refreshes it.
+- If several agent sessions share one terminal through tmux or similar, focusing
+  can only raise that shared terminal session.
+- If no exact match is found, TabChroma still activates iTerm2 so you are close
+  to the right place.
+
+You can test a row manually with:
+
+```bash
+tab-chroma sessions list
+tab-chroma sessions focus '<session_key-from-list>'
+```
+
 ## Configuration
 
 The plugin reads these environment variables (set them in SwiftBar's plugin
@@ -79,8 +121,16 @@ environment, or export them where SwiftBar can see them):
 - The plugin opens the registry **read-only** (`mode=ro`), so it never creates,
   writes, or locks the database and cannot race the hook writers.
 - Sessions are pruned from the registry by the hook writers (and by the
-  Prune/Clear actions here), not by this reader. The reader simply hides expired
-  rows (`expires_at < now`).
-- Codex sessions have no clean end signal, so a finished Codex session shows 🟢
-  until its 12-hour fallback TTL elapses (or you Prune/Clear). This is expected;
-  see `docs/design/session-registry-lights.md`.
+  Prune/Clear actions here), not by this reader. The reader simply hides rows
+  that are not live (`expires_at < now`); live PID-anchored rows carry
+  `expires_at = NULL` and always show.
+- **Lights do not expire on inactivity.** A session stays lit for as long as its
+  agent process is alive — closing the laptop for the weekend leaves every
+  still-running session shown. Rows are removed only when the hook writer's (or
+  Prune's) liveness sweep finds the process gone: a clean exit (`SessionEnd`), a
+  crash, or a closed tab. Because the sweep runs on hook writes, a dead session
+  may linger until the next event from any session, then disappear; Prune forces
+  it immediately. See `docs/design/session-registry-lights.md` (Phase 4).
+- Codex sessions have no clean end signal, but a finished-yet-running Codex
+  session is still a live process, so it correctly stays 🟢 until you exit it
+  (or Prune). Only the PID-less fallback rows still rely on the 12-hour TTL.
