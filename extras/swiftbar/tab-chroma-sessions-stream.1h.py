@@ -1,83 +1,100 @@
 #!/usr/bin/env python3
 # <xbar.title>TabChroma Session Lights (streaming)</xbar.title>
-# <xbar.version>v0.1-proto</xbar.version>
+# <xbar.version>v1.0</xbar.version>
 # <xbar.author>TabChroma</xbar.author>
-# <xbar.desc>Streaming variant: one resident process watches the registry and pushes updates on change, instead of re-spawning python3 every second.</xbar.desc>
+# <xbar.desc>One status light per active Claude Code / Codex session. Streaming variant: a resident process watches the registry and pushes updates on change.</xbar.desc>
 # <xbar.dependencies>python3</xbar.dependencies>
 # <swiftbar.type>streamable</swiftbar.type>
 # <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
 #
-# PROTOTYPE — streamable SwiftBar reader for the TabChroma session registry.
+# Streaming SwiftBar reader for the TabChroma session registry.
 #
 # Why this exists
 # ---------------
-# The shipped reader `tab-chroma-sessions.1s.py` is a *poll + respawn* plugin:
-# SwiftBar cold-starts a fresh python3 once per second just to open SQLite, run
-# one SELECT, and print. That is the "a bit slow / heavy" feel — up to ~1s of
-# latency before a state change shows, plus an interpreter spawn 86,400×/day.
+# The poll reader `tab-chroma-sessions.1s.py` re-spawns python3 once per second
+# just to open SQLite, run one SELECT, and print — up to ~1s of latency before a
+# state change shows, plus an interpreter cold-start 86,400x/day. As a SwiftBar
+# **streamable** plugin this script runs ONCE and stays resident: it watches the
+# registry file's mtime and re-renders only when the registry actually changes,
+# so lights flip ~immediately with near-zero idle cost.
 #
-# A SwiftBar **streamable** plugin runs ONCE and stays resident: this script
-# holds nothing open against the DB (it still reads read-only per cycle) but it
-# pays the python startup cost exactly once, and it goes event-driven — it
-# watches the registry file's mtime and re-renders only when the registry
-# actually changes, so lights flip ~immediately with near-zero idle cost. This
-# captures most of what a native Swift menu-bar app would buy, with no build
-# step and no new dependency — staying within the project's "pure bash + Python
-# 3" ethos. See docs/design/session-registry-lights.md.
-#
-# Streamable protocol (VERIFY against your SwiftBar version)
-# ---------------------------------------------------------
-# A streamable plugin emits a full menu block, then a line containing only
-# `~~~`, which tells SwiftBar "that block is complete, render it" — then it keeps
-# the process alive and emits the next block whenever it likes. The separator
-# token and exact semantics have varied across SwiftBar releases; if the menu
-# shows literal `~~~` lines or never updates, your SwiftBar build wants a
-# different token (or doesn't support streaming) — fall back to the shipped
-# `tab-chroma-sessions.1s.py`. This is why the file is marked v0.1-proto.
+# Streamable protocol (confirmed against SwiftBar docs)
+# -----------------------------------------------------
+# Marked streamable via `<swiftbar.type>streamable</swiftbar.type>`. The plugin
+# emits a full menu block, then a line containing only `~~~`; SwiftBar resets the
+# menu item on each `~~~`. The process runs until SwiftBar quits or it fails. We
+# must flush after every block (python buffers stdout when it is not a tty, so
+# without a flush SwiftBar would never see the output). The `.1h.py` interval in
+# the filename is ignored for streamable plugins (it would only bound an
+# auto-restart); the streaming loop does the real work.
 #
 # Single source of truth
 # ----------------------
-# All rendering (menu-bar line, dropdown, colors, collapse, sanitization,
-# actions) is REUSED from the shipped `tab-chroma-sessions.1s.py` in this same
-# folder via importlib — this file only owns the watch/emit loop, so the two can
-# never drift in how a session is drawn.
+# All rendering is REUSED from the poll reader in this same folder: this script
+# imports it as a module and calls its `render_lines()`. It owns only the
+# watch/emit loop. We import the SIBLING poll plugin (found by glob, so a renamed
+# interval like `.2s.py` still resolves) rather than a separate helper module,
+# because SwiftBar "tries to import every file in the plugin folder as a plugin"
+# (including nested folders) — a standalone library file would surface as a stray
+# menu item, so there is nowhere safe to put one.
 #
-# Install: copy BOTH this file and tab-chroma-sessions.1s.py into your SwiftBar
-# Plugins folder (they must sit side by side so the import resolves), then enable
-# only ONE of them in SwiftBar so you don't get two menu-bar items. The `.1h.py`
-# interval is just a safety re-spawn cadence; the streaming loop does the real
-# work between respawns.
+# Install / choose ONE
+# --------------------
+# The poll reader and this streaming reader are alternatives, not both-at-once:
+#   - SwiftBar with streamable support  -> use this one.
+#   - xbar, or older SwiftBar           -> use the poll reader.
+# Copy BOTH files into the Plugins folder (this one needs the poll file present
+# to import its renderer), but DISABLE the one you are not using in SwiftBar's
+# plugin list so you get a single menu-bar item. See extras/swiftbar/README.md.
 
+import glob
 import importlib.util
 import os
+import signal
 import sys
 import time
 
-POLL_INTERVAL = float(os.environ.get("TAB_CHROMA_STREAM_POLL", "0.25"))  # mtime check cadence (s)
+POLL_INTERVAL = float(os.environ.get("TAB_CHROMA_STREAM_POLL", "0.25"))  # mtime-check cadence (s)
 HEARTBEAT = float(os.environ.get("TAB_CHROMA_STREAM_HEARTBEAT", "5"))    # force a redraw at least this often (s)
 SEPARATOR = "~~~"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-READER_PATH = os.path.join(HERE, "tab-chroma-sessions.1s.py")
+
+
+def _find_reader_path():
+    """Locate the sibling poll plugin (the renderer we reuse).
+
+    Matches `tab-chroma-sessions.<interval>.py` — the leading `.` after
+    `sessions` means this glob does NOT match our own `...-sessions-stream...`
+    filename, and it tolerates a renamed interval (`.1s.py`, `.2s.py`, ...).
+    """
+    for path in sorted(glob.glob(os.path.join(HERE, "tab-chroma-sessions.*.py"))):
+        if os.path.abspath(path) != os.path.abspath(__file__):
+            return path
+    return None
 
 
 def load_reader():
-    """Import the shipped reader as a module so we reuse its render functions."""
-    spec = importlib.util.spec_from_file_location("tc_reader", READER_PATH)
+    path = _find_reader_path()
+    if path is None:
+        raise ImportError(
+            f"poll reader 'tab-chroma-sessions.*.py' not found next to {__file__}; "
+            "copy it into the same SwiftBar Plugins folder")
+    spec = importlib.util.spec_from_file_location("tc_reader", path)
     if spec is None or spec.loader is None:
-        raise ImportError(f"cannot load reader module from {READER_PATH}")
+        raise ImportError(f"cannot load reader module from {path}")
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # runs top-level (defs + DB_PATH from env); main() is guarded
+    spec.loader.exec_module(mod)  # runs top-level defs only; main() is __main__-guarded
     return mod
 
 
 def registry_signature(db_path):
-    """A cheap change token: max mtime across the SQLite file and its WAL/SHM.
+    """Cheap change token: max mtime across the SQLite file and its WAL/SHM.
 
-    In WAL mode a commit often lands in `-wal` while the main file's mtime
-    lags, so we must watch all three. Returns 0.0 when nothing exists yet
-    (idle / pre-first-write), which still differs from a real mtime so the
-    first real write triggers a redraw.
+    In WAL mode a commit often lands in `-wal` while the main file's mtime lags,
+    so we must watch all three. Returns 0.0 when nothing exists yet (idle /
+    pre-first-write); that still differs from a real mtime, so the first real
+    write triggers a redraw.
     """
     newest = 0.0
     for suffix in ("", "-wal", "-shm"):
@@ -90,34 +107,38 @@ def registry_signature(db_path):
     return newest
 
 
-def emit(reader):
-    """Render one full menu block (reusing the shipped reader) and flush + separate."""
-    rows = reader.read_sessions()
-    if rows is None:
-        # Mirror the shipped reader's degraded state for an unreadable DB.
-        out = ["⚠️ | color=#CC8800", "---",
-               "TabChroma registry unreadable | color=#888888",
-               f"Registry: {reader.DB_PATH} | size=10 color=#888888",
-               "Refresh | refresh=true"]
-    else:
-        out = [reader.render_menu_bar(rows)] + reader.render_dropdown(rows)
-    sys.stdout.write("\n".join(out))
+def emit(lines):
+    """Write one full menu block, flush, and emit the streamable separator."""
+    sys.stdout.write("\n".join(lines))
     sys.stdout.write("\n" + SEPARATOR + "\n")
     sys.stdout.flush()
 
 
+def _install_signal_handlers():
+    # SwiftBar terminates the process when it quits or the plugin is disabled.
+    # Exit cleanly (no traceback) on SIGTERM/SIGINT.
+    def _bye(_signum, _frame):
+        sys.exit(0)
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _bye)
+        except (ValueError, OSError):
+            pass
+
+
 def main():
+    _install_signal_handlers()
     try:
         reader = load_reader()
     except Exception as e:
-        # Without the shipped reader we cannot render; surface it once and idle so
-        # SwiftBar shows a clickable error rather than a blank/looping item.
-        sys.stdout.write(f"⚠️ | color=#CC0000\n---\n"
-                         f"stream proto: could not import reader: {e} | color=#888888\n"
-                         f"Expected next to: {READER_PATH} | size=10 color=#888888\n"
-                         f"{SEPARATOR}\n")
-        sys.stdout.flush()
-        # Block instead of busy-exiting so SwiftBar doesn't hot-respawn us.
+        # Without the renderer we cannot draw; surface it once and idle so
+        # SwiftBar shows a clickable error instead of hot-respawning us.
+        emit([
+            "⚠️ | color=#CC0000",
+            "---",
+            f"streaming reader: {e} | color=#888888",
+            "Refresh | refresh=true",
+        ])
         while True:
             time.sleep(3600)
 
@@ -129,13 +150,15 @@ def main():
         now = time.time()
         if sig != last_sig or (now - last_emit) >= HEARTBEAT:
             try:
-                emit(reader)
+                emit(reader.render_lines())
             except Exception as e:
-                # Never let one bad cycle kill the resident loop — degrade and
-                # keep going; the next change or heartbeat retries.
-                sys.stdout.write(f"⚠️ | color=#CC8800\n---\n"
-                                 f"stream proto cycle error: {e} | color=#888888\n{SEPARATOR}\n")
-                sys.stdout.flush()
+                # Never let one bad cycle kill the resident loop; the next change
+                # or heartbeat retries.
+                emit([
+                    "⚠️ | color=#CC8800",
+                    "---",
+                    f"streaming cycle error: {e} | color=#888888",
+                ])
             last_sig = sig
             last_emit = now
         time.sleep(POLL_INTERVAL)
