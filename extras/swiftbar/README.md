@@ -64,6 +64,34 @@ relaunch SwiftBar.
 The `.1s.py` in the filename is the **refresh interval** (1 second). To poll
 less often, rename the copy, e.g. `tab-chroma-sessions.2s.py` or `.5s.py`.
 
+## Streaming variant (experimental)
+
+`tab-chroma-sessions-stream.1h.py` is a **streamable** SwiftBar plugin that
+replaces poll-and-respawn with a single resident process: it watches the
+registry file's mtime and pushes an update only when the registry actually
+changes, so lights flip ~immediately with near-zero idle cost — instead of
+cold-starting python3 every second. It reuses the standard reader's rendering
+verbatim (it imports `tab-chroma-sessions.1s.py`), so the two never diverge in
+how a session is drawn.
+
+To try it, copy **both** files into your Plugins folder (they must sit side by
+side so the import resolves) and enable **only one** of the two in SwiftBar so
+you don't get two menu-bar items:
+
+```bash
+cp extras/swiftbar/tab-chroma-sessions.1s.py \
+   extras/swiftbar/tab-chroma-sessions-stream.1h.py \
+   ~/Library/Application\ Support/SwiftBar/Plugins/
+chmod +x ~/Library/Application\ Support/SwiftBar/Plugins/tab-chroma-sessions*.py
+```
+
+It is a prototype: SwiftBar's streamable separator protocol has varied across
+versions, so if the menu shows literal `~~~` lines or never updates, your build
+doesn't support it the way this expects — just use the standard
+`tab-chroma-sessions.1s.py` instead. Tunables: `TAB_CHROMA_STREAM_POLL`
+(mtime-check cadence, default 0.25s) and `TAB_CHROMA_STREAM_HEARTBEAT` (force a
+redraw at least this often so dropdown ages stay fresh, default 5s).
+
 
 ## Focus iTerm2 from a session row
 

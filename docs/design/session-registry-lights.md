@@ -2,10 +2,11 @@
 
 ## Status
 
-- **Status:** Phases 1 (registry writer) + 2 (SwiftBar/xbar reader) implemented 2026-05-30.
+- **Status:** Phases 1 (registry writer), 2 (SwiftBar/xbar reader), 3 (click-to-focus), 4 (PID-liveness) all on `main` (Phases 3+4 merged 2026-06-02). Phase 5 (lights ordering) is design-only.
 - **Storage:** SQLite (see [Recommendation](#recommendation)).
 - **DB location:** `~/Library/Application Support/TabChroma/sessions.sqlite3` (resolved 2026-05-30).
-- **Next step:** Validate Codex `session_id` stability against real payloads; Phase 4 (iTerm2 geometry ordering) is future work.
+- **Real-hook validation:** harness `extras/tests/real-hook-check.sh`; (a) durable agent PID + (b) idle-survival confirmed against live Claude sessions 2026-06-02; (c) click-to-focus still needs the interactive run; Codex `session_id` stability still unverified.
+- **Next step:** run the interactive focus check; implement Phase 5 `sessions order`.
 
 See also: `docs/worm/2026-05-30-session-registry-lights.md` for the append-only discussion log that led to this design.
 
@@ -616,6 +617,108 @@ degrades to "treat as the TTL fallback" rather than breaking the hook.
   alone, which is the reliable key and also pins the exact pane within a split.
   (`terminal` stays stored for possible future iTerm-variable-based matching.)
 - **`sessions list` KEY column** widened so `agent:<uuid>` keys do not wrap.
+
+## Phase 5: lights ordering (left-to-right to match iTerm2 tabs)
+
+> Renumbering note: this is the work the earlier sections call "second pass:
+> iTerm2 geometry" and "Phase 4: iTerm2 geometry/order". Since the *real* Phase 4
+> became PID-liveness, geometry/ordering is now **Phase 5**. The earlier two
+> sections are the original sketch; this section is the current, concrete design
+> and supersedes them where they disagree.
+
+Goal: arrange the menu-bar lights in the same left-to-right order as the user's
+visible iTerm2 tabs, so the lights read as a spatial map of the windows rather
+than a severity/recency sort. Today the reader sorts by state severity then
+`updated_at` (see `render_menu_bar`); Phase 5 makes display order *positional*.
+
+### What we already have that makes this tractable
+
+Phase 3 proved the key primitive: iTerm2's AppleScript object model exposes
+`tty of s` for every session, and we already store the resolved `tty_device`
+(e.g. `/dev/ttys003`) per registry row. So we do **not** need fragile title/cwd
+correlation or the iTerm2 Python API — we can enumerate iTerm2 in display order
+and join to registry rows on `tty_device`, the same reliable key `focus` uses.
+This also means **no Accessibility permission**: it is the same Automation
+(Apple Events → iTerm) TCC scope the focus feature already requests.
+
+### Design
+
+Add a `tab-chroma sessions order` command, run **off the hot hook path** (never
+inside `process_hook`). It:
+
+1. Walks iTerm2 in display order via AppleScript: `windows` → `tabs of w` →
+   `sessions of t`, emitting the `tty of s` for each in iteration order.
+2. Assigns an incrementing integer `display_order` as it walks.
+3. Writes `display_order` back onto the matching registry row
+   (`UPDATE sessions SET display_order=? WHERE tty_device=?`), and clears
+   (`NULL`) `display_order` on rows whose tty no longer appears.
+
+Schema: one backward-compatible column, same `ALTER TABLE ... ADD COLUMN` pattern
+as `tty_device`/`session_pid`:
+
+```sql
+ALTER TABLE sessions ADD COLUMN display_order INTEGER;
+```
+
+Renderer change (`render_menu_bar` and the `sessions list` order): when **all**
+shown rows have a non-NULL `display_order`, sort by it; otherwise fall back to
+the current severity/recency sort. Mixed (some ordered, some not) falls back too,
+so a half-populated order never scrambles the line. Collapse behavior is
+unchanged — ordering only affects the uncollapsed one-light-per-session line.
+
+### When does `order` run?
+
+Three options, not mutually exclusive; start with the cheapest:
+
+- **A — SwiftBar refresh action / periodic.** The reader (or a dropdown
+  "Re-sort to tab order" action) shells out to `tab-chroma sessions order`
+  before/while rendering. Simple, but adds an AppleScript round-trip to the UI
+  path (~tens of ms) — acceptable off the hook path, and a natural fit for the
+  **streamable** plugin (run `order` once per visible change, not per second).
+- **B — Debounced from the hook.** The hook could fire `order` in the background
+  at most once every N seconds. Risk: it pulls AppleScript latency near the hook;
+  must be fully detached and best-effort. Lower priority.
+- **C — Manual.** `tab-chroma sessions order` on demand. Always available as the
+  primitive the others call.
+
+Recommendation: ship **C** (the command) first, wire **A** into the streamable
+plugin, treat **B** as optional.
+
+### Window ordering — the one real decision
+
+Tabs within a window have an unambiguous left-to-right order. *Windows* do not:
+AppleScript's `windows` list is roughly front-to-back z-order, which changes as
+you click around and is not the same as on-screen left-to-right position. Pinning
+true on-screen geometry would require reading window `bounds` (origin x/y) and
+sorting by that — doable (bounds are available without Accessibility) and the
+preferred refinement. First cut: order by `(window-bounds-x, tab-index,
+session-index-within-tab)`. If bounds prove flaky, fall back to AppleScript
+window iteration order and document that windows order by focus history.
+
+### Caveats
+
+- **Splits/panes:** a tab with N panes contributes N sessions/lights in pane
+  iteration order. That matches "one light per session" and is correct, just
+  denser than one-per-tab.
+- **tmux / shared tty:** multiple agent sessions multiplexed on one tty collapse
+  to a single `tty_device`, so they cannot be ordered apart — same limitation as
+  focus. They keep the fallback sort among themselves.
+- **Staleness:** `display_order` is a snapshot from the last `order` run; moving a
+  tab between runs leaves the light briefly out of position until the next run.
+  Acceptable — it self-heals on the next `order`.
+- **Non-iTerm / Apple Terminal:** no tab enumeration here, so these rows always
+  use the fallback sort. Ordering is an iTerm2-only enhancement.
+- **Best-effort, like focus:** any AppleScript failure leaves `display_order`
+  untouched and the renderer falls back. It must never break hooks or the reader.
+
+### Open questions for Phase 5
+
+- Is window `bounds`-based left-to-right ordering stable enough across Spaces /
+  multiple displays, or should we scope ordering to the frontmost window only?
+- Should `display_order` be global across windows, or per-window with a window
+  separator glyph in the menu bar (e.g. `🔵🟢 | 🔴`)?
+- How much AppleScript latency does a full enumeration add with many
+  windows/tabs, and does that argue for caching the walk between renders?
 
 ## Implementation plan
 
