@@ -830,9 +830,15 @@ def ps_start(pid):
     _start_cache[key] = val
     return val
 
+def _norm_lstart(s):
+    # Locale/order-tolerant key for a ps -o lstart= string (see the hook writer
+    # _norm_lstart). Keys on the start instant, not its locale rendering.
+    t = s.split()
+    return tuple(sorted(t[1:])) if len(t) > 1 else tuple(sorted(t))
+
 def pid_alive(pid, start):
     # Mirror of the hook writer's check: alive iff the PID exists and, when both
-    # start times are known, they still match (guards against PID reuse).
+    # start instants are known, they still match (guards against PID reuse).
     if not pid:
         return False
     try:
@@ -846,7 +852,7 @@ def pid_alive(pid, start):
     if not start:
         return True
     cur = ps_start(pid)
-    return (not cur) or cur == start
+    return (not cur) or _norm_lstart(cur) == _norm_lstart(start)
 
 def session_row(key):
     tty_expr = "tty_device" if has_column("tty_device") else "'' AS tty_device"
@@ -1315,9 +1321,20 @@ try:
             _start_cache[key] = val
             return val
 
+        def _norm_lstart(s):
+            # Locale/order-tolerant key for a ps -o lstart= string. ps formats
+            # lstart per the caller locale ("Wed 3 Jun ..." vs "Wed Jun 3 ..."),
+            # so a raw compare wrongly reports a live PID as recycled when a prune
+            # runs under a different locale than the writer. Drop the weekday and
+            # compare the remaining tokens as a sorted set: keys on the instant.
+            # (No apostrophes here: this block runs inside eval "$(... )", where
+            # bash 3.2 mis-parses a single quote even in a quoted heredoc.)
+            t = s.split()
+            return tuple(sorted(t[1:])) if len(t) > 1 else tuple(sorted(t))
+
         def _pid_alive(pid, start):
-            # Alive iff the PID exists AND (when both start times are known) its
-            # start time still matches. Biased against false-dead: an
+            # Alive iff the PID exists AND (when both start instants are known)
+            # its start instant still matches. Biased against false-dead: an
             # unverifiable start time trusts kill(0) rather than pruning a row.
             if not pid:
                 return False
@@ -1332,7 +1349,7 @@ try:
             if not start:
                 return True
             cur = _ps_start(pid)
-            return (not cur) or cur == start
+            return (not cur) or _norm_lstart(cur) == _norm_lstart(start)
 
         session_pid = None
         pid_start = ""
