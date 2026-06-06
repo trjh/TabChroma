@@ -265,18 +265,29 @@ def render_dropdown(rows):
     lines.append(f"Registry: {sanitize(DB_PATH)} | size=10 color=#888888")
     return lines
 
-def main():
+def render_lines():
+    """Full menu output as a list of lines (menu-bar line first, then dropdown).
+
+    The single source of truth for how a session set is drawn. main() (poll
+    mode) prints it once; the streamable plugin imports this module and calls
+    render_lines() each time the registry changes — so the two readers can never
+    diverge in how a session is rendered.
+    """
     rows = read_sessions()
     if rows is None:
         # DB exists but could not be read (locked/corrupt) — degrade gracefully.
-        print("⚠️ | color=#CC8800")
-        print("---")
-        print("TabChroma registry unreadable | color=#888888")
-        print(f"Registry: {DB_PATH} | size=10 color=#888888")
-        print("Refresh | refresh=true")
-        return
-    print(render_menu_bar(rows))
-    for line in render_dropdown(rows):
+        return [
+            "⚠️ | color=#CC8800",
+            "---",
+            "TabChroma registry unreadable | color=#888888",
+            f"Registry: {DB_PATH} | size=10 color=#888888",
+            "Refresh | refresh=true",
+        ]
+    return [render_menu_bar(rows)] + render_dropdown(rows)
+
+
+def main():
+    for line in render_lines():
         print(line)
 
 

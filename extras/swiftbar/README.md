@@ -64,6 +64,44 @@ relaunch SwiftBar.
 The `.1s.py` in the filename is the **refresh interval** (1 second). To poll
 less often, rename the copy, e.g. `tab-chroma-sessions.2s.py` or `.5s.py`.
 
+## Streaming variant (SwiftBar only)
+
+`tab-chroma-sessions-stream.1h.py` is a **streamable** SwiftBar plugin that
+replaces poll-and-respawn with a single resident process: it watches the
+registry file's mtime and pushes an update only when the registry actually
+changes, so lights flip ~immediately with near-zero idle cost — instead of
+cold-starting python3 every second. It reuses the poll reader's rendering
+verbatim (it imports the sibling `tab-chroma-sessions.*.py` and calls its
+`render_lines()`), so the two can never diverge in how a session is drawn.
+
+**Poll vs. streaming — pick one:**
+
+| | Poll (`tab-chroma-sessions.1s.py`) | Streaming (`…-stream.1h.py`) |
+|---|---|---|
+| Host | SwiftBar **or** xbar | SwiftBar with streamable support only |
+| Update latency | up to the refresh interval (~1s) | ~immediate (on registry change) |
+| Idle cost | a python3 spawn every interval | one resident process, near-zero |
+
+Copy **both** files into your Plugins folder — the streaming plugin imports the
+poll plugin to render — but **enable only one** in SwiftBar's plugin list, or
+you'll get two menu-bar items (SwiftBar runs every file in the folder):
+
+```bash
+cp extras/swiftbar/tab-chroma-sessions.1s.py \
+   extras/swiftbar/tab-chroma-sessions-stream.1h.py \
+   ~/Library/Application\ Support/SwiftBar/Plugins/
+chmod +x ~/Library/Application\ Support/SwiftBar/Plugins/tab-chroma-sessions*.py
+```
+
+Then, in SwiftBar's plugin list, disable whichever of the two you are not using.
+
+The plugin uses SwiftBar's streamable protocol (`<swiftbar.type>streamable</swiftbar.type>`
+plus a `~~~` separator after each menu block). If your SwiftBar build is too old
+to support streaming — the menu shows literal `~~~` lines or never updates — use
+the poll reader instead. Tunables: `TAB_CHROMA_STREAM_POLL` (mtime-check cadence,
+default 0.25s) and `TAB_CHROMA_STREAM_HEARTBEAT` (force a redraw at least this
+often so dropdown ages stay fresh, default 5s).
+
 
 ## Focus iTerm2 from a session row
 
