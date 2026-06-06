@@ -1,0 +1,3 @@
+# Build output (produced by `make` / swiftc)
+tabchroma-lights
+*.dSYM/
