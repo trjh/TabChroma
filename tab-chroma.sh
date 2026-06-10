@@ -938,6 +938,12 @@ def focus_iterm(row):
         print(msg, file=sys.stderr)
         subprocess.run(["/usr/bin/open", "-a", "iTerm"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return 1
+    # Fetch each tab's session ttys in ONE Apple Event (`tty of sessions of t`)
+    # rather than one round-trip per session (`tty of s`). On a busy machine the
+    # per-session form could blow past the timeout — its cost scales with the
+    # total session count (every split pane), while the bulk form scales with the
+    # tab count and is ~2x faster in practice. The list returned is parallel to
+    # `sessions of t`, so the matching index resolves the session to select.
     script = r'''
 on run argv
   set targetTty to item 1 of argv
@@ -945,21 +951,20 @@ on run argv
     activate
     repeat with w in windows
       repeat with t in tabs of w
-        repeat with s in sessions of t
-          try
-            if ((tty of s) as text) is targetTty then
-              try
-                select w
-              end try
-              try
-                select t
-              end try
-              try
-                select s
-              end try
-              return "focused"
-            end if
-          end try
+        set ttys to tty of sessions of t
+        repeat with i from 1 to (count of ttys)
+          if (item i of ttys) is targetTty then
+            try
+              select w
+            end try
+            try
+              select t
+            end try
+            try
+              select (item i of sessions of t)
+            end try
+            return "focused"
+          end if
         end repeat
       end repeat
     end repeat
@@ -973,7 +978,10 @@ end run
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=5,
+            # Generous margin: the scan is sub-second, but iTerm can stall Apple
+            # Events transiently (heavy output, app launch). Focus runs in the
+            # background (terminal=false), so a longer ceiling blocks nothing.
+            timeout=10,
         )
     except Exception as e:
         msg = f"Couldn't run osascript to focus {label}: {e}"
