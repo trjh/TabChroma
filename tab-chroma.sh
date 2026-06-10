@@ -82,6 +82,54 @@ resolve_terminal_target() {
     pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
     i=$((i + 1))
   done
+
+  # Fallback for detached hooks. Some agents (observed with codex) spawn the
+  # hook reparented away from the agent process, so the ppid walk above never
+  # reaches a tty-owning ancestor: TTY_DEVICE stays /dev/tty and TTY_PID empty,
+  # leaving a row that can never be focused and never liveness-pruned (it lingers
+  # on the TTL backstop). The hook still inherits the agent's
+  # ITERM_SESSION_ID/TERM_SESSION_ID, and every process in that iTerm pane
+  # carries it in its environment (readable via `ps -E`, same user). Find a
+  # process in that pane that owns a real, writable tty and adopt its tty,
+  # preferring the agent's own process (matched by comm) as the liveness anchor.
+  if [ "$TTY_DEVICE" = "/dev/tty" ]; then
+    resolve_via_pane_env "${ITERM_SESSION_ID:-$TERM_SESSION_ID}" "${TAB_CHROMA_AGENT:-}"
+  fi
+}
+
+# Best-effort: map an iTerm pane session id ($1) to the pane's tty + a liveness
+# pid, by scanning process environments. $2 is the preferred agent comm
+# (claude/codex) used to pick the liveness anchor; any pane process on a real
+# tty supplies the tty itself. Only called on the detached-hook fallback path,
+# so the one-shot `ps -E` scan is off the common hook path.
+resolve_via_pane_env() {
+  local sid="$1" want="$2"
+  [ -n "$sid" ] || return 1
+  local pid tt comm rest any_tty="" any_pid=""
+  while IFS=' ' read -r pid tt comm rest; do
+    [ -n "$pid" ] && [ "$pid" != "$$" ] || continue
+    [ -n "$tt" ] && [ "$tt" != "??" ] && [ -w "/dev/$tt" ] || continue
+    case "$rest" in
+      *"ITERM_SESSION_ID=$sid"*|*"TERM_SESSION_ID=$sid"*) ;;
+      *) continue ;;
+    esac
+    # First pane-mate on a real tty pins the tty (all share the pane's tty).
+    [ -z "$any_tty" ] && { any_tty="$tt"; any_pid="$pid"; }
+    # Prefer the agent's own process as the durable liveness anchor.
+    if [ -n "$want" ]; then
+      case "$comm" in
+        *"$want"*) TTY_DEVICE="/dev/$tt"; TTY_PID="$pid"; return 0 ;;
+      esac
+    fi
+  done <<EOF
+$(ps -E -A -o pid=,tty=,comm=,command= 2>/dev/null)
+EOF
+  if [ -n "$any_tty" ]; then
+    TTY_DEVICE="/dev/$any_tty"
+    TTY_PID="$any_pid"
+    return 0
+  fi
+  return 1
 }
 
 resolve_terminal_target

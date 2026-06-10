@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template: `make install` substitutes the installed binary path for the
+     placeholder below and writes the result to
+     ~/Library/LaunchAgents/com.tabchroma.lights.plist. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.tabchroma.lights</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>@BIN@</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Relaunch only after a crash (non-zero exit), NOT after a clean exit.
+         This is what makes the in-app "Quit" menu item actually stick: a plain
+         KeepAlive=true would have launchd immediately relaunch the app the user
+         just quit. NSApp.terminate exits 0, so a user Quit stays quit. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Menu-bar agent: needs the Aqua GUI session. -->
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/tabchroma-lights.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/tabchroma-lights.err</string>
+
+    <!-- To pass config (collapse threshold, agent prefix, custom DB path),
+         add an EnvironmentVariables dict, e.g.:
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>TAB_CHROMA_LIGHTS_AGENT_PREFIX</key>
+        <string>1</string>
+    </dict>
+    -->
+</dict>
+</plist>
