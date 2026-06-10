@@ -227,6 +227,43 @@ case_native_app_self_test() {
     "$bin" --self-test
 }
 
+# Load resolve_via_pane_env from the source script (it is a pure function; the
+# rest of tab-chroma.sh self-dispatches on args/stdin, so we extract just this).
+load_pane_env_fn() {
+  eval "$(awk '/^resolve_via_pane_env\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$TC_BIN")"
+}
+
+case_pane_env_bogus_sid_no_match() {
+  # Deterministic everywhere: a session id no process can have must not match,
+  # and must leave the /dev/tty fallback (and empty pid) untouched.
+  load_pane_env_fn || return 1
+  TTY_DEVICE="/dev/tty"; TTY_PID=""
+  resolve_via_pane_env "w9t9p9:NO-SUCH-SESSION-000000000000" "codex"
+  [ "$?" -eq 1 ] && [ "$TTY_DEVICE" = "/dev/tty" ] && [ -z "$TTY_PID" ]
+}
+
+case_pane_env_empty_sid_returns_skip() {
+  load_pane_env_fn || return 1
+  TTY_DEVICE="/dev/tty"; TTY_PID=""
+  resolve_via_pane_env "" "codex"
+  [ "$?" -eq 1 ] && [ "$TTY_DEVICE" = "/dev/tty" ]
+}
+
+case_pane_env_resolves_real_pane() {
+  # Real check: from inside an iTerm/Terminal pane, the running test process
+  # carries ITERM_SESSION_ID/TERM_SESSION_ID and a real tty, so resolving that
+  # session id should recover this very tty. Skipped where there is no pane
+  # (CI, piped run) — that environment is covered by real-hook-check.sh.
+  local sid tty_now
+  sid="${ITERM_SESSION_ID:-${TERM_SESSION_ID:-}}"
+  tty_now="$(ps -o tty= -p $$ 2>/dev/null | tr -d '[:space:]')"
+  [ -n "$sid" ] && [ -n "$tty_now" ] && [ "$tty_now" != "??" ] && [ -w "/dev/$tty_now" ] || return 2
+  load_pane_env_fn || return 1
+  TTY_DEVICE="/dev/tty"; TTY_PID=""
+  resolve_via_pane_env "$sid" "" || return 1
+  [ "$TTY_DEVICE" = "/dev/$tty_now" ] && [ -n "$TTY_PID" ]
+}
+
 check "status creates default config" case_status_creates_config
 check "theme use persists active theme" case_theme_use_persists
 check "feature toggle updates config" case_feature_toggle_updates_config
@@ -239,6 +276,9 @@ check "hook debounces duplicate working state" case_hook_duplicate_state_debounc
 check "permission bypasses debounce" case_permission_bypasses_debounce
 check "disabled config skips hook state" case_hook_disabled_config_skips_state
 check "registry records and lists session" case_registry_records_and_lists_session
+check "pane-env fallback ignores unknown session id" case_pane_env_bogus_sid_no_match
+check "pane-env fallback no-ops on empty session id" case_pane_env_empty_sid_returns_skip
+check "pane-env fallback resolves the real pane tty" case_pane_env_resolves_real_pane
 check "native app self-test" case_native_app_self_test
 
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"

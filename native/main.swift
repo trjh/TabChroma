@@ -10,9 +10,10 @@
 //   ./tabchroma-lights
 //
 // Env overrides (same as the SwiftBar reader):
-//   TAB_CHROMA_REGISTRY_DB      registry path (default: Application Support)
-//   TAB_CHROMA_LIGHTS_COLLAPSE  collapse threshold (default 8; 0 disables)
-//   TAB_CHROMA_BIN              path to tab-chroma.sh for focus/prune actions
+//   TAB_CHROMA_REGISTRY_DB        registry path (default: Application Support)
+//   TAB_CHROMA_LIGHTS_COLLAPSE    collapse threshold (default 8; 0 disables)
+//   TAB_CHROMA_LIGHTS_AGENT_PREFIX  prefix each light with C/X (default off)
+//   TAB_CHROMA_BIN                path to tab-chroma.sh for focus/prune actions
 
 import AppKit
 import Darwin
@@ -25,6 +26,11 @@ let home = FileManager.default.homeDirectoryForCurrentUser.path
 let dbPath = environment["TAB_CHROMA_REGISTRY_DB"]
     ?? "\(home)/Library/Application Support/TabChroma/sessions.sqlite3"
 let collapseThreshold = Int(environment["TAB_CHROMA_LIGHTS_COLLAPSE"] ?? "8") ?? 8
+// Prefix each light with its agent letter (C=Claude, X=Codex). Off by default
+// because it is redundant noise when every session is the same agent; turn it
+// on for mixed Claude+Codex setups. Accepts 1/true/yes (case-insensitive).
+let agentPrefix = ["1", "true", "yes"].contains(
+    (environment["TAB_CHROMA_LIGHTS_AGENT_PREFIX"] ?? "").lowercased())
 
 let stateEmoji: [String: String] = [
     "working": "🔵", "done": "🟢", "attention": "🟠",
@@ -34,10 +40,12 @@ let stateRank: [String: Int] = [
     "permission": 0, "attention": 1, "working": 2, "done": 3, "starting": 4, "ended": 5,
 ]
 let agentRank: [String: Int] = ["claude": 0, "codex": 1]
+let agentLetter: [String: String] = ["claude": "C", "codex": "X"]
 
 func emoji(_ s: String) -> String { stateEmoji[s] ?? "⚪" }
 func rank(_ s: String) -> Int { stateRank[s] ?? 99 }
 func arank(_ a: String) -> Int { agentRank[a] ?? 99 }
+func aletter(_ a: String) -> String { agentLetter[a] ?? "?" }
 
 func fmtAge(_ secs: Int) -> String {
     let s = max(0, secs)
@@ -87,10 +95,23 @@ func readSessions() -> [Session] {
 }
 
 // Menu-bar string: one circle per session (most urgent first), collapsed to
-// grouped counts past the threshold — matching the SwiftBar reader.
-func menuBarTitle(_ sessions: [Session]) -> String {
+// grouped counts past the threshold — matching the SwiftBar reader. With
+// `prefix`, each light carries its agent letter (C🔵 / X🟢) and the collapsed
+// form groups by (agent, state) instead of state alone.
+func menuBarTitle(_ sessions: [Session], prefix: Bool = agentPrefix) -> String {
     if sessions.isEmpty { return "○" }
     if collapseThreshold > 0 && sessions.count > collapseThreshold {
+        if prefix {
+            var counts: [String: Int] = [:]   // key: "agent\tstate"
+            for s in sessions { counts["\(s.agent)\t\(s.state)", default: 0] += 1 }
+            return counts.keys
+                .sorted {
+                    let (a0, s0) = split($0), (a1, s1) = split($1)
+                    return (arank(a0), rank(s0)) < (arank(a1), rank(s1))
+                }
+                .map { let (a, s) = split($0); return "\(aletter(a))\(emoji(s))×\(counts[$0]!)" }
+                .joined(separator: " ")
+        }
         var counts: [String: Int] = [:]
         for s in sessions { counts[s.state, default: 0] += 1 }
         return counts.keys.sorted { rank($0) < rank($1) }
@@ -99,8 +120,14 @@ func menuBarTitle(_ sessions: [Session]) -> String {
     }
     return sessions
         .sorted { (rank($0.state), -$0.updated) < (rank($1.state), -$1.updated) }
-        .map { emoji($0.state) }
+        .map { (prefix ? aletter($0.agent) : "") + emoji($0.state) }
         .joined(separator: " ")
+}
+
+// Split a "agent\tstate" group key back into its parts.
+private func split(_ key: String) -> (String, String) {
+    let parts = key.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+    return (String(parts.first ?? ""), parts.count > 1 ? String(parts[1]) : "")
 }
 
 // ── tab-chroma CLI (reused for focus / prune) ─────────────────────────────────
@@ -159,10 +186,16 @@ func runSelfTests() -> Int32 {
         Session(key: "permission", agent: "claude", state: "permission", label: "Permission", r: nil, g: nil, b: nil, updated: 100),
         Session(key: "working-new", agent: "codex", state: "working", label: "Working", r: nil, g: nil, b: nil, updated: 500),
     ]
+    // Assertions depend on whether the ambient collapseThreshold collapses these
+    // 3 sessions (the `make test` target sets it to 2; the default is 8).
     if collapseThreshold > 0 && sessions.count > collapseThreshold {
-        check("menuBarTitle collapses by severity", menuBarTitle(sessions) == "🔴×1 🔵×1 🟢×1")
+        check("menuBarTitle collapses by severity", menuBarTitle(sessions, prefix: false) == "🔴×1 🔵×1 🟢×1")
+        // Prefixed collapse groups by (agent, state), ordered agent-then-severity.
+        check("menuBarTitle collapses by agent+state", menuBarTitle(sessions, prefix: true) == "C🔴×1 C🟢×1 X🔵×1")
     } else {
-        check("menuBarTitle sorts by severity", menuBarTitle(sessions) == "🔴 🔵 🟢")
+        check("menuBarTitle sorts by severity", menuBarTitle(sessions, prefix: false) == "🔴 🔵 🟢")
+        // Expanded keeps state-severity order; the codex 'working' sorts between the claude rows.
+        check("menuBarTitle prefixes agent letters", menuBarTitle(sessions, prefix: true) == "C🔴 X🔵 C🟢")
     }
 
     guard environment["TAB_CHROMA_REGISTRY_DB"] != nil else {
@@ -239,10 +272,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self            // dropdown rebuilt fresh on each open (ages current)
         statusItem.menu = menu
         updateTitle()
+        startWatching()
+    }
 
-        // Watch the registry: re-render the menu-bar title only when the DB
-        // (or its WAL/SHM) actually changes. A 0.5s in-process stat() is
-        // negligible and has none of SwiftBar's per-tick python respawn cost.
+    // Re-render the menu-bar title only when the registry actually changes.
+    // A 0.5s mtime-gated poll of the DB (+ its -wal/-shm): the stat() is
+    // negligible and a SQLite read happens only on an actual change — none of
+    // SwiftBar's per-tick python respawn cost.
+    //
+    // (An earlier revision pushed updates via FSEvents instead, but in-place
+    // SQLite WAL writes did not reliably deliver events — FSEventStreamStart
+    // would succeed yet never call back, leaving the menu frozen at its startup
+    // snapshot. The simple timer is correct and cheap, so it is the mechanism.)
+    func startWatching() {
         let t = DispatchSource.makeTimerSource(queue: .main)
         t.schedule(deadline: .now(), repeating: 0.5)
         t.setEventHandler { [weak self] in self?.tick() }
@@ -270,7 +312,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func updateTitle() {
-        statusItem.button?.title = menuBarTitle(readSessions())
+        let sessions = readSessions()
+        let title = menuBarTitle(sessions)
+        // Idle (no sessions): dim the ○ so it recedes into the menu bar.
+        let attrs: [NSAttributedString.Key: Any] =
+            sessions.isEmpty ? [.foregroundColor: NSColor.tertiaryLabelColor] : [:]
+        statusItem.button?.attributedTitle = NSAttributedString(string: title, attributes: attrs)
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -288,17 +335,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             for s in sorted {
                 let label = s.label.isEmpty ? "(no label)" : s.label
-                let title = "\(emoji(s.state))  \(label) — \(s.state) (\(fmtAge(now - s.updated)))"
+                let ap = agentPrefix ? "\(aletter(s.agent)) " : ""
+                let title = "\(ap)\(emoji(s.state))  \(label) — \(s.state) (\(fmtAge(now - s.updated)))"
                 let item = NSMenuItem(title: title, action: #selector(focusSession(_:)), keyEquivalent: "")
                 item.target = self
                 item.representedObject = s.key
-                if let r = s.r, let g = s.g, let b = s.b {
-                    item.attributedTitle = NSAttributedString(string: title, attributes: [
-                        .foregroundColor: NSColor(srgbRed: CGFloat(r) / 255.0,
-                                                  green: CGFloat(g) / 255.0,
-                                                  blue: CGFloat(b) / 255.0, alpha: 1.0),
-                    ])
-                }
+                // The leading emoji already conveys color; keep the row text in
+                // the default menu font color so it stays readable.
                 menu.addItem(item)
             }
         }
