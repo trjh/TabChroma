@@ -31,6 +31,7 @@ dependencies beyond the macOS SDK:
 cd native
 make            # swiftc -swift-version 5 -O -framework AppKit main.swift -o tabchroma-lights
 ./tabchroma-lights      # or: make run
+make test       # compile and run the non-GUI self-test
 ```
 
 It runs as a menu-bar *agent* (`NSApplication` activation policy `.accessory`):

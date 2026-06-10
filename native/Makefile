@@ -10,9 +10,12 @@ FLAGS := -swift-version 5 -O -framework AppKit
 $(APP): $(SRC)
 	$(SWIFT) $(FLAGS) $(SRC) -o $(APP)
 
-.PHONY: run clean
+.PHONY: run test clean
 run: $(APP)
 	./$(APP)
+
+test: $(APP)
+	TAB_CHROMA_REGISTRY_DB="$$(mktemp -t tabchroma-native.XXXXXX.sqlite3)" TAB_CHROMA_LIGHTS_COLLAPSE=2 ./$(APP) --self-test
 
 clean:
 	rm -f $(APP)
