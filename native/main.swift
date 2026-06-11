@@ -42,6 +42,10 @@ let stateRank: [String: Int] = [
 let agentRank: [String: Int] = ["claude": 0, "codex": 1]
 let agentLetter: [String: String] = ["claude": "C", "codex": "X"]
 
+// Persisted (UserDefaults) toggle for the "Show tty & pid" dropdown item: append
+// each session's pid + tty inline. Off by default to keep the menu short.
+let showTtyPidKey = "ShowTtyPid"
+
 func emoji(_ s: String) -> String { stateEmoji[s] ?? "⚪" }
 func rank(_ s: String) -> Int { stateRank[s] ?? 99 }
 func arank(_ a: String) -> Int { agentRank[a] ?? 99 }
@@ -58,6 +62,10 @@ struct Session {
     var key, agent, state, label: String
     var r, g, b: Int?
     var updated: Int
+    // Detail fields (shown inline by the "Show tty & pid" toggle); default so
+    // fixtures can omit them.
+    var tty: String = ""
+    var pid: Int? = nil
 }
 
 // ── Registry read (read-only SQLite; mode=ro so it never locks the writers) ───
@@ -70,12 +78,21 @@ func readSessions() -> [Session] {
         return []
     }
     defer { sqlite3_close(db) }
-    let sql = "SELECT session_key, agent, state, label, color_r, color_g, color_b, updated_at "
-        + "FROM sessions WHERE expires_at IS NULL OR expires_at >= ? ORDER BY updated_at DESC"
+    let cols = "session_key, agent, state, label, color_r, color_g, color_b, updated_at"
+    let detailCols = ", tty_device, session_pid"
+    let tail = " FROM sessions WHERE expires_at IS NULL OR expires_at >= ? ORDER BY updated_at DESC"
     var stmt: OpaquePointer?
-    // A failed prepare most commonly means the table does not exist yet (no hook
-    // has written) — treat that as idle rather than an error.
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+    // Prefer the richer query (detail columns used by the dropdown submenu); fall
+    // back to the base columns if an older DB lacks them. A failed prepare on the
+    // base query most commonly means the table does not exist yet (no hook has
+    // written) — treat that as idle rather than an error.
+    var hasDetail = true
+    if sqlite3_prepare_v2(db, "SELECT " + cols + detailCols + tail, -1, &stmt, nil) != SQLITE_OK {
+        sqlite3_finalize(stmt)
+        stmt = nil
+        hasDetail = false
+        guard sqlite3_prepare_v2(db, "SELECT " + cols + tail, -1, &stmt, nil) == SQLITE_OK else { return [] }
+    }
     defer { sqlite3_finalize(stmt) }
     let now = Int(Date().timeIntervalSince1970)
     sqlite3_bind_int64(stmt, 1, Int64(now))
@@ -89,7 +106,8 @@ func readSessions() -> [Session] {
     while sqlite3_step(stmt) == SQLITE_ROW {
         rows.append(Session(
             key: text(0), agent: text(1), state: text(2), label: text(3),
-            r: intOrNil(4), g: intOrNil(5), b: intOrNil(6), updated: intOrNil(7) ?? now))
+            r: intOrNil(4), g: intOrNil(5), b: intOrNil(6), updated: intOrNil(7) ?? now,
+            tty: hasDetail ? text(8) : "", pid: hasDetail ? intOrNil(9) : nil))
     }
     return rows
 }
@@ -333,20 +351,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 (arank($0.agent), rank($0.state), -$0.updated)
                     < (arank($1.agent), rank($1.state), -$1.updated)
             }
+            let showDetail = UserDefaults.standard.bool(forKey: showTtyPidKey)
             for s in sorted {
                 let label = s.label.isEmpty ? "(no label)" : s.label
                 let ap = agentPrefix ? "\(aletter(s.agent)) " : ""
-                let title = "\(ap)\(emoji(s.state))  \(label) — \(s.state) (\(fmtAge(now - s.updated)))"
+                var title = "\(ap)\(emoji(s.state))  \(label) — \(s.state) (\(fmtAge(now - s.updated)))"
+                // When "Show tty & pid" is on, append pid + tty inline. This makes
+                // the shared-pane case legible: sessions on the same tty all focus
+                // the same iTerm tab, because the tty IS the focus key.
+                if showDetail {
+                    let pid = s.pid.map(String.init) ?? "—"
+                    let tty = s.tty.isEmpty ? "—" : s.tty.replacingOccurrences(of: "/dev/", with: "")
+                    title += "   ·   pid \(pid)  \(tty)"
+                }
+                // Single click focuses; the leading emoji conveys color, row text
+                // stays default-color for readability.
                 let item = NSMenuItem(title: title, action: #selector(focusSession(_:)), keyEquivalent: "")
                 item.target = self
                 item.representedObject = s.key
-                // The leading emoji already conveys color; keep the row text in
-                // the default menu font color so it stays readable.
                 menu.addItem(item)
             }
         }
 
         menu.addItem(.separator())
+        let toggle = NSMenuItem(title: "Show tty & pid", action: #selector(toggleShowTtyPid), keyEquivalent: "")
+        toggle.target = self
+        toggle.state = UserDefaults.standard.bool(forKey: showTtyPidKey) ? .on : .off
+        menu.addItem(toggle)
         let prune = NSMenuItem(title: "Prune dead", action: #selector(pruneDead), keyEquivalent: "")
         prune.target = self
         menu.addItem(prune)
@@ -363,6 +394,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func focusSession(_ sender: NSMenuItem) {
         if let key = sender.representedObject as? String { runTabChroma(["sessions", "focus", key]) }
+    }
+
+    @objc func toggleShowTtyPid() {
+        let d = UserDefaults.standard
+        d.set(!d.bool(forKey: showTtyPidKey), forKey: showTtyPidKey)
+        // Menu closes on click; the dropdown is rebuilt fresh on next open, and
+        // the menu-bar title is unaffected by this view-only toggle.
     }
 
     @objc func pruneDead() {

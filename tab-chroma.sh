@@ -97,15 +97,29 @@ resolve_terminal_target() {
   fi
 }
 
-# Best-effort: map an iTerm pane session id ($1) to the pane's tty + a liveness
-# pid, by scanning process environments. $2 is the preferred agent comm
-# (claude/codex) used to pick the liveness anchor; any pane process on a real
-# tty supplies the tty itself. Only called on the detached-hook fallback path,
+# Best-effort: map an iTerm pane session id ($1) to the pane's tty (for focus)
+# and, when possible, this session's own agent process pid (for liveness). $2 is
+# the agent comm (claude/codex). Only called on the detached-hook fallback path,
 # so the one-shot `ps -E` scan is off the common hook path.
+#
+# Liveness anchor rule: TTY_PID is only set to the agent's OWN process (comm
+# matches $want). It must NOT borrow an unrelated pane-mate's pid — e.g. a codex
+# `done` hook firing after codex exited, in a pane that still hosts a claude
+# process, would otherwise anchor the dead codex row to the live claude pid and
+# keep it lit forever. Leaving TTY_PID empty makes such a row PID-less, so it
+# falls to the TTL backstop and prunes, instead of falsely showing as alive.
+# The tty (focus key) is shared by the whole pane, so any pane-mate supplies it.
+# Process list for resolve_via_pane_env: "<pid> <tty> <comm> <command+env>" per
+# process. `ps -E` exposes the environment (same user only). Factored out so the
+# unit tests can stub it with a synthetic list.
+_pane_proc_list() {
+  ps -E -A -o pid=,tty=,comm=,command= 2>/dev/null
+}
+
 resolve_via_pane_env() {
   local sid="$1" want="$2"
   [ -n "$sid" ] || return 1
-  local pid tt comm rest any_tty="" any_pid=""
+  local pid tt comm rest any_tty=""
   while IFS=' ' read -r pid tt comm rest; do
     [ -n "$pid" ] && [ "$pid" != "$$" ] || continue
     [ -n "$tt" ] && [ "$tt" != "??" ] && [ -w "/dev/$tt" ] || continue
@@ -114,19 +128,20 @@ resolve_via_pane_env() {
       *) continue ;;
     esac
     # First pane-mate on a real tty pins the tty (all share the pane's tty).
-    [ -z "$any_tty" ] && { any_tty="$tt"; any_pid="$pid"; }
-    # Prefer the agent's own process as the durable liveness anchor.
+    [ -z "$any_tty" ] && any_tty="$tt"
+    # Anchor liveness ONLY to the agent's own process, never a borrowed pid.
     if [ -n "$want" ]; then
       case "$comm" in
         *"$want"*) TTY_DEVICE="/dev/$tt"; TTY_PID="$pid"; return 0 ;;
       esac
     fi
   done <<EOF
-$(ps -E -A -o pid=,tty=,comm=,command= 2>/dev/null)
+$(_pane_proc_list)
 EOF
   if [ -n "$any_tty" ]; then
+    # Pane found but no live agent process of our own — adopt the tty for focus,
+    # but leave TTY_PID empty so the row uses the TTL backstop (and prunes).
     TTY_DEVICE="/dev/$any_tty"
-    TTY_PID="$any_pid"
     return 0
   fi
   return 1
