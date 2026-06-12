@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **tab-chroma** is a Claude Code hook plugin that changes iTerm2 tab colors, badges, and tab titles based on Claude Code hook events (working, done, attention, permission). It is a pure bash + Python 3 plugin with no build step or dependencies beyond the standard library.
 
+It also maintains a **shared session registry** (SQLite at `~/Library/Application Support/TabChroma/sessions.sqlite3`) recording every active Claude Code / Codex session, and a **menu-bar "lights" UI** that shows one status light per session (click to focus its iTerm2 pane, ordered left-to-right to match the tab layout). The primary reader is the native macOS app in `native/` ("TabChroma Lights", a single Swift file — the one component with a build step, via `swiftc`); a legacy SwiftBar/xbar plugin lives in `extras/swiftbar/`. The hook writes the registry; CLI access is `tab-chroma sessions <list|focus|order|prune|clear|path>`. Full design: `docs/design/session-registry-lights.md`.
+
 ## Locations
 
 - **Source repo:** `~/Documents/Scripts/tab_chroma/` — contains `tab-chroma.sh`, themes, commands, completions, Formula, install/uninstall scripts, and documentation.
