@@ -98,10 +98,17 @@ cat /tmp/tabchroma-lights.log /tmp/tabchroma-lights.err
 
 ## Status & next steps
 
-Lights render, update live, dim when idle, and click-to-focus works;
-auto-start at login is handled by `make install`. Optional agent-prefix mode
-(`C`/`X`) is available via `TAB_CHROMA_LIGHTS_AGENT_PREFIX`. Planned polish:
+Lights render, update live, dim when idle, collapse past a threshold, and
+**order left-to-right to match the iTerm2 tab layout** (Phase 5; the app runs
+`tab-chroma sessions order` on a debounced timer). Click-to-focus works and is
+confirmed interactively for both Claude and Codex sessions; auto-start at login
+is handled by `make install`. The agent-prefix mode (`C`/`X`) is available via
+`TAB_CHROMA_LIGHTS_AGENT_PREFIX`.
+
+Planned polish (see the Roadmap in `docs/design/session-registry-lights.md`):
 
 - Wrap in a minimal `.app` bundle + a Login Item (nicer than the raw LaunchAgent).
-- Per-window ordering — sort lights left-to-right to match iTerm2 tab order
-  (Phase 5 in `docs/design/session-registry-lights.md`).
+- Make the `C`/`X` agent prefix a **dropdown toggle** (persisted in
+  `UserDefaults`, like "Show tty & pid"), not only an env var.
+- Harden left-to-right ordering across **multiple displays / Spaces** (window
+  `bounds` stability).

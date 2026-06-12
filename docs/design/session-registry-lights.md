@@ -5,8 +5,8 @@
 - **Status:** Phases 1 (registry writer), 2 (SwiftBar/xbar reader), 3 (click-to-focus), 4 (PID-liveness) all on `main` (Phases 3+4 merged 2026-06-02). Phase 5 (lights ordering) **implemented 2026-06-12** (`sessions order` + native debounced trigger + positional render); see the Phase 5 section.
 - **Storage:** SQLite (see [Recommendation](#recommendation)).
 - **DB location:** `~/Library/Application Support/TabChroma/sessions.sqlite3` (resolved 2026-05-30).
-- **Real-hook validation:** harness `extras/tests/real-hook-check.sh`; (a) durable agent PID + (b) idle-survival confirmed against live Claude sessions 2026-06-02; (c) click-to-focus still needs the interactive run; Codex `session_id` stability still unverified.
-- **Next step:** interactive visual confirmation of live left-to-right ordering in the running menu-bar app (CLI `sessions order` + `sessions list` confirmed positional 2026-06-12).
+- **Real-hook validation:** harness `extras/tests/real-hook-check.sh`; (a) durable agent PID + (b) idle-survival confirmed against live Claude sessions 2026-06-02; **(c) click-to-focus confirmed interactively 2026-06-12** (raised the right pane for a live **Codex** session, exercising the codex tty-resolution path); Codex `session_id` stability still unverified across many real payloads.
+- **Next step:** roadmap polish only (see [Roadmap](#roadmap--deferred-polish)) — no core feature work outstanding. Interactive visual confirmation of live left-to-right ordering in the running menu-bar app is the one remaining spot-check (CLI `sessions order` + `sessions list` confirmed positional 2026-06-12).
 
 See also: `docs/worm/2026-05-30-session-registry-lights.md` for the append-only discussion log that led to this design.
 
@@ -755,6 +755,31 @@ What shipped, and where it diverged from the sketch above:
 
 Deferred open questions: multi-display/Spaces bounds stability and a per-window
 separator glyph are untouched — global left-to-right ordering is the v1.
+
+## Roadmap / deferred polish
+
+Phases 1–5 are implemented and merged. What remains is optional polish, not core
+feature work:
+
+- **`.app` bundle + Login Item.** Wrap the bare `native/` executable in a minimal
+  `.app` bundle with a proper Login Item, nicer than the raw `launchd`
+  LaunchAgent `make install` sets up today. Low priority; the LaunchAgent works.
+- **`C`/`X` agent prefix as a menu-bar toggle.** The agent-letter prefix is
+  env-var only (`TAB_CHROMA_LIGHTS_AGENT_PREFIX`). Promote it to a persisted
+  dropdown toggle in the native app (`UserDefaults`, exactly like the existing
+  "Show tty & pid" toggle) so it can be flipped without editing the plist.
+- **Left-to-right ordering across multiple displays / Spaces.** Phase 5 orders by
+  window `bounds` (origin x, then y). Validate/harden this across multiple
+  monitors and Spaces, where `bounds` coordinates and window membership get
+  trickier; consider scoping to the frontmost Space or a per-window separator
+  glyph in the menu bar (e.g. `🔵🟢 | 🔴`).
+
+Smaller deferred items:
+
+- Truly-gone Codex sessions with no live pane to borrow a tty from remain
+  un-focusable (they TTL-prune). Acceptable.
+- Codex `session_id` stability is unverified across many real payloads (all
+  live-tested rows so far were Claude).
 
 ## Implementation plan
 

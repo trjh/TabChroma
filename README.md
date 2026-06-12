@@ -14,6 +14,16 @@ iTerm2 visual feedback plugin for [Claude Code](https://claude.ai/code) and [Ope
 | permission | Red | Awaiting approval |
 | session.start | Reset | New session began |
 
+> **Menu-bar session lights.** Beyond per-tab colors, TabChroma ships a native
+> macOS **menu-bar app** — "TabChroma Lights" — that shows one status light per
+> active Claude Code / Codex session across all your tabs and windows, ordered
+> left-to-right to match your iTerm2 layout. Click a light to jump straight to
+> that session's pane. See [Session lights](#session-lights-menu-bar).
+
+<p align="center">
+  <img src="docs/assets/lights-menubar.png" alt="TabChroma Lights menu-bar app" />
+</p>
+
 ## Requirements
 
 - macOS with [iTerm2](https://iterm2.com)
@@ -202,24 +212,44 @@ have many agents running across tabs and windows:
 🔵 🟢 🔴      blue working · green done · orange attention · red permission
 ```
 
-By default each session is just a colored circle; set
-`TAB_CHROMA_LIGHTS_AGENT_PREFIX=on` to prefix the agent letter (`C🔵 X🟢`,
-C=Claude, X=Codex). The dropdown always names the agent per session.
+### TabChroma Lights — native app (recommended)
 
-Inspect the registry from the CLI:
+The primary reader is a small native macOS menu-bar app in
+[`native/`](native/) — see its [README](native/README.md) to build, install, and
+run it at login. It is event-driven (no plugin host), collapses to grouped counts
+past a threshold, orders lights left-to-right to match your iTerm2 tab layout, and
+**focuses a session's iTerm2 pane when you click its light**. By default each
+session is just a colored circle; toggle the agent letter (`C🔵 X🟢`, C=Claude,
+X=Codex) with `TAB_CHROMA_LIGHTS_AGENT_PREFIX=on`, and the dropdown always names
+the agent per session.
+
+```bash
+cd native && make install   # build, install, and run at login (launchd agent)
+```
+
+### SwiftBar / xbar plugin (alternative)
+
+A ready-to-use **SwiftBar / xbar** plugin also lives in
+[`extras/swiftbar/`](extras/swiftbar/) — see its
+[README](extras/swiftbar/README.md) for install steps. The native app supersedes
+it; reach for the plugin only if you already run SwiftBar/xbar and prefer it.
+
+### CLI
+
+Inspect and manage the registry directly:
 
 ```bash
 tab-chroma sessions list     # active sessions: agent, state, label, age, cwd
-tab-chroma sessions prune    # drop expired sessions
+tab-chroma sessions focus <key>  # raise iTerm2 and focus a session's pane
+tab-chroma sessions order    # renumber lights left-to-right to match iTerm2 tabs
+tab-chroma sessions prune    # drop sessions whose process is gone
 tab-chroma sessions clear    # drop all sessions
 tab-chroma sessions path     # print the registry database path
 ```
 
-A ready-to-use **SwiftBar / xbar** plugin lives in
-[`extras/swiftbar/`](extras/swiftbar/) — see its
-[README](extras/swiftbar/README.md) for install steps. The lights and CLI work
-for both Claude Code and Codex; because Codex has no session-end hook, finished
-Codex sessions linger (green) until a fallback TTL expires.
+The lights and CLI work for both Claude Code and Codex; because Codex has no
+session-end hook, finished Codex sessions linger (green) until a fallback TTL
+expires.
 
 ## How It Works
 
