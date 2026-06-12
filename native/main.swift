@@ -28,8 +28,10 @@ let dbPath = environment["TAB_CHROMA_REGISTRY_DB"]
 let collapseThreshold = Int(environment["TAB_CHROMA_LIGHTS_COLLAPSE"] ?? "8") ?? 8
 // Prefix each light with its agent letter (C=Claude, X=Codex). Off by default
 // because it is redundant noise when every session is the same agent; turn it
-// on for mixed Claude+Codex setups. Accepts 1/true/yes (case-insensitive).
-let agentPrefix = ["1", "true", "yes"].contains(
+// on for mixed Claude+Codex setups. Accepts 1/true/yes/on (case-insensitive) —
+// `on` matches tab-chroma's badge/title/color on|off vocabulary and the SwiftBar
+// reader, so the same value works everywhere.
+let agentPrefix = ["1", "true", "yes", "on"].contains(
     (environment["TAB_CHROMA_LIGHTS_AGENT_PREFIX"] ?? "").lowercased())
 
 let stateEmoji: [String: String] = [

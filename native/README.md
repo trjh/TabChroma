@@ -81,7 +81,7 @@ cat /tmp/tabchroma-lights.log /tmp/tabchroma-lights.err
 |---|---|---|
 | `TAB_CHROMA_REGISTRY_DB` | `~/Library/Application Support/TabChroma/sessions.sqlite3` | Registry path. |
 | `TAB_CHROMA_LIGHTS_COLLAPSE` | `8` | Collapse the bar to grouped counts past this many sessions (`0` disables). |
-| `TAB_CHROMA_LIGHTS_AGENT_PREFIX` | off | Prefix each light with its agent letter (`C🔵 X🟢`); collapsed counts then group by agent+state. Accepts `1`/`true`/`yes`. Useful for mixed Claude+Codex setups. |
+| `TAB_CHROMA_LIGHTS_AGENT_PREFIX` | off | Prefix each light with its agent letter (`C🔵 X🟢`); collapsed counts then group by agent+state. Accepts `1`/`true`/`yes`/`on` (case-insensitive). Useful for mixed Claude+Codex setups. |
 | `TAB_CHROMA_BIN` | auto-detected | Path to `tab-chroma.sh` for focus/prune (auto: `~/.claude/hooks/tab-chroma/tab-chroma.sh` or `PATH`). |
 
 ## How it works
