@@ -2,11 +2,11 @@
 
 ## Status
 
-- **Status:** Phases 1 (registry writer), 2 (SwiftBar/xbar reader), 3 (click-to-focus), 4 (PID-liveness) all on `main` (Phases 3+4 merged 2026-06-02). Phase 5 (lights ordering) is design-only.
+- **Status:** Phases 1 (registry writer), 2 (SwiftBar/xbar reader), 3 (click-to-focus), 4 (PID-liveness) all on `main` (Phases 3+4 merged 2026-06-02). Phase 5 (lights ordering) **implemented 2026-06-12** (`sessions order` + native debounced trigger + positional render); see the Phase 5 section.
 - **Storage:** SQLite (see [Recommendation](#recommendation)).
 - **DB location:** `~/Library/Application Support/TabChroma/sessions.sqlite3` (resolved 2026-05-30).
 - **Real-hook validation:** harness `extras/tests/real-hook-check.sh`; (a) durable agent PID + (b) idle-survival confirmed against live Claude sessions 2026-06-02; (c) click-to-focus still needs the interactive run; Codex `session_id` stability still unverified.
-- **Next step:** run the interactive focus check; implement Phase 5 `sessions order`.
+- **Next step:** interactive visual confirmation of live left-to-right ordering in the running menu-bar app (CLI `sessions order` + `sessions list` confirmed positional 2026-06-12).
 
 See also: `docs/worm/2026-05-30-session-registry-lights.md` for the append-only discussion log that led to this design.
 
@@ -719,6 +719,42 @@ window iteration order and document that windows order by focus history.
   separator glyph in the menu bar (e.g. `🔵🟢 | 🔴`)?
 - How much AppleScript latency does a full enumeration add with many
   windows/tabs, and does that argue for caching the walk between renders?
+
+### Implemented (2026-06-12)
+
+What shipped, and where it diverged from the sketch above:
+
+- **`tab-chroma sessions order`** (in `cmd_sessions`): walks iTerm2 read-only via
+  `ORDER_SCRIPT`, emitting `win_left⇥win_top⇥seq⇥tty` per session; sorts by
+  `(win_left, win_top, seq)` and stamps `display_order = 1..N` onto matching
+  `tty_device` rows, NULLing rows whose tty left the layout. Writes **only changed
+  rows** (NULL-safe `display_order IS NOT ?`) so a steady layout bumps no mtime.
+- **Window ordering** uses on-screen `bounds` (origin x, then y) — the confirmed
+  decision, not AppleScript window iteration order.
+- **AppleScript gotchas, both resolved:**
+  - The `-1700` coercion error is avoided by reading `bounds of w` as integers
+    and using the **bulk** `tty of sessions of t` per tab.
+  - `tab`/`linefeed` delimiters are built **outside** the `tell application
+    "iTerm2"` block — inside it, `tab` resolves to iTerm2's own `tab` class and
+    the delimiter would render as the literal word `tab`. Built via
+    `character id 9 / 10`.
+  - `application "iTerm2" is running` guards the walk so the background poll never
+    **launches** iTerm2 (verified launch-safe). Focus remains the only path that
+    activates iTerm.
+- **Native trigger (option B-ish, app-driven):** `maybeOrder()` runs `sessions
+  order` on launch and every ~4 s (8 × 0.5 s ticks), async via `Process`,
+  coalesced with `orderInFlight`, skipped when there are no sessions. The existing
+  0.5 s mtime watch repaints when `order` changes a row.
+- **Render:** `readSessions` selects `display_order` (three-tier query fallback so
+  an older DB lacking it still yields tty/pid); `orderedForDisplay` sorts the
+  menu-bar line and dropdown by `display_order` only when **every** shown row has
+  one, else the prior severity/recency sort. The CLI `sessions list` does the same.
+- **Testing:** `unit.sh` stubs the walk via `TAB_CHROMA_ORDER_ENUM` (mirrors the
+  `_pane_proc_list` stub) and asserts position-based ranking + stale-tty clearing;
+  the native self-test covers `orderedForDisplay` and `display_order` reads.
+
+Deferred open questions: multi-display/Spaces bounds stability and a per-window
+separator glyph are untouched — global left-to-right ordering is the v1.
 
 ## Implementation plan
 
