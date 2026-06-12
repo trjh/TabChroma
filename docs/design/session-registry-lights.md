@@ -764,10 +764,10 @@ feature work:
 - **`.app` bundle + Login Item.** Wrap the bare `native/` executable in a minimal
   `.app` bundle with a proper Login Item, nicer than the raw `launchd`
   LaunchAgent `make install` sets up today. Low priority; the LaunchAgent works.
-- **`C`/`X` agent prefix as a menu-bar toggle.** The agent-letter prefix is
-  env-var only (`TAB_CHROMA_LIGHTS_AGENT_PREFIX`). Promote it to a persisted
-  dropdown toggle in the native app (`UserDefaults`, exactly like the existing
-  "Show tty & pid" toggle) so it can be flipped without editing the plist.
+- ~~**`C`/`X` agent prefix as a menu-bar toggle.**~~ **Done 2026-06-12** — the
+  native app has an "Agent letters (C/X)" dropdown toggle persisted in
+  `UserDefaults` (env var `TAB_CHROMA_LIGHTS_AGENT_PREFIX` is the default; the
+  toggle overrides it at runtime), mirroring the "Show tty & pid" toggle.
 - **Left-to-right ordering across multiple displays / Spaces.** Phase 5 orders by
   window `bounds` (origin x, then y). Validate/harden this across multiple
   monitors and Spaces, where `bounds` coordinates and window membership get

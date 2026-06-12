@@ -48,6 +48,16 @@ let agentLetter: [String: String] = ["claude": "C", "codex": "X"]
 // each session's pid + tty inline. Off by default to keep the menu short.
 let showTtyPidKey = "ShowTtyPid"
 
+// Persisted (UserDefaults) toggle for the agent-letter prefix (C/X). The
+// `TAB_CHROMA_LIGHTS_AGENT_PREFIX` env var above is the *default*; once the user
+// flips the dropdown toggle, the stored choice wins. Read via
+// agentPrefixEnabled() everywhere so env-only setups keep working unchanged.
+let agentPrefixKey = "AgentPrefix"
+func agentPrefixEnabled() -> Bool {
+    let d = UserDefaults.standard
+    return d.object(forKey: agentPrefixKey) != nil ? d.bool(forKey: agentPrefixKey) : agentPrefix
+}
+
 func emoji(_ s: String) -> String { stateEmoji[s] ?? "⚪" }
 func rank(_ s: String) -> Int { stateRank[s] ?? 99 }
 func arank(_ a: String) -> Int { agentRank[a] ?? 99 }
@@ -414,7 +424,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func updateTitle() {
         let sessions = readSessions()
-        let title = menuBarTitle(sessions)
+        let title = menuBarTitle(sessions, prefix: agentPrefixEnabled())
         // Idle (no sessions): dim the ○ so it recedes into the menu bar.
         let attrs: [NSAttributedString.Key: Any] =
             sessions.isEmpty ? [.foregroundColor: NSColor.tertiaryLabelColor] : [:]
@@ -435,9 +445,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     < (arank($1.agent), rank($1.state), -$1.updated)
             }
             let showDetail = UserDefaults.standard.bool(forKey: showTtyPidKey)
+            let showPrefix = agentPrefixEnabled()
             for s in sorted {
                 let label = s.label.isEmpty ? "(no label)" : s.label
-                let ap = agentPrefix ? "\(aletter(s.agent)) " : ""
+                let ap = showPrefix ? "\(aletter(s.agent)) " : ""
                 var title = "\(ap)\(emoji(s.state))  \(label) — \(s.state) (\(fmtAge(now - s.updated)))"
                 // When "Show tty & pid" is on, append pid + tty inline. This makes
                 // the shared-pane case legible: sessions on the same tty all focus
@@ -457,6 +468,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+        let prefixToggle = NSMenuItem(title: "Agent letters (C/X)", action: #selector(toggleAgentPrefix), keyEquivalent: "")
+        prefixToggle.target = self
+        prefixToggle.state = agentPrefixEnabled() ? .on : .off
+        menu.addItem(prefixToggle)
         let toggle = NSMenuItem(title: "Show tty & pid", action: #selector(toggleShowTtyPid), keyEquivalent: "")
         toggle.target = self
         toggle.state = UserDefaults.standard.bool(forKey: showTtyPidKey) ? .on : .off
@@ -484,6 +499,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         d.set(!d.bool(forKey: showTtyPidKey), forKey: showTtyPidKey)
         // Menu closes on click; the dropdown is rebuilt fresh on next open, and
         // the menu-bar title is unaffected by this view-only toggle.
+    }
+
+    @objc func toggleAgentPrefix() {
+        UserDefaults.standard.set(!agentPrefixEnabled(), forKey: agentPrefixKey)
+        // Unlike "Show tty & pid", the agent prefix is also in the menu-bar
+        // string, so repaint the bar now instead of waiting for a registry change.
+        updateTitle()
     }
 
     @objc func pruneDead() {

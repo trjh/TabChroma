@@ -219,8 +219,9 @@ The primary reader is a small native macOS menu-bar app in
 run it at login. It is event-driven (no plugin host), collapses to grouped counts
 past a threshold, orders lights left-to-right to match your iTerm2 tab layout, and
 **focuses a session's iTerm2 pane when you click its light**. By default each
-session is just a colored circle; toggle the agent letter (`C🔵 X🟢`, C=Claude,
-X=Codex) with `TAB_CHROMA_LIGHTS_AGENT_PREFIX=on`, and the dropdown always names
+session is just a colored circle; flip on the agent letter (`C🔵 X🟢`, C=Claude,
+X=Codex) from the dropdown's **"Agent letters (C/X)"** toggle (or set
+`TAB_CHROMA_LIGHTS_AGENT_PREFIX=on` as the default), and the dropdown always names
 the agent per session.
 
 ```bash
