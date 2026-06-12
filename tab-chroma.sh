@@ -264,6 +264,7 @@ SESSIONS:
   sessions list         Show active agent sessions in the shared registry
   sessions focus <key>  Raise iTerm2 and focus the session
   sessions prune        Remove sessions whose process is gone
+  sessions order        Renumber lights left-to-right to match iTerm2 tabs
   sessions clear        Remove all sessions
   sessions path         Print the registry database path
 
@@ -856,7 +857,7 @@ cmd_sessions() {
     path)
       echo "$REGISTRY_DB"
       ;;
-    list|prune|clear|focus)
+    list|prune|clear|focus|order)
       TAB_CHROMA_REGISTRY_DB="$REGISTRY_DB" python3 - "$sub" "$@" << 'PYEOF'
 import os, subprocess, sys, time
 sub = sys.argv[1]
@@ -1025,6 +1026,79 @@ end run
     subprocess.run(["/usr/bin/open", "-a", "iTerm"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return 1
 
+# Read-only iTerm2 walk for `sessions order`. Emits one line per session,
+# "win_left<TAB>win_top<TAB>seq<TAB>tty", in window -> tab -> session iteration
+# order. Two things matter here:
+#   * tabChar/lfChar are built OUTSIDE the `tell application "iTerm2"` block:
+#     inside it, `tab` resolves to iTerm2's own `tab` class, not the tab
+#     character, so the delimiter would come out as the literal word "tab".
+#   * No `activate` and no `select` — ordering must never steal the user focus;
+#     it only reads `bounds of w` and the bulk `tty of sessions of t`.
+ORDER_SCRIPT = r'''
+on run
+  set tabChar to character id 9
+  set lfChar to character id 10
+  set out to ""
+  set seq to 0
+  -- `is running` does NOT launch the app (verified), so the background order
+  -- poll never springs iTerm2 to life when it is closed. Focus is the only
+  -- path allowed to launch/activate iTerm.
+  if not (application "iTerm2" is running) then return ""
+  tell application "iTerm2"
+    repeat with w in windows
+      set b to bounds of w
+      set wl to (item 1 of b) as integer
+      set wt to (item 2 of b) as integer
+      repeat with t in tabs of w
+        set ttys to tty of sessions of t
+        repeat with i from 1 to (count of ttys)
+          set out to out & wl & tabChar & wt & tabChar & seq & tabChar & (item i of ttys) & lfChar
+          set seq to seq + 1
+        end repeat
+      end repeat
+    end repeat
+  end tell
+  return out
+end run
+'''
+
+def enumerate_order():
+    # Parsed (win_left, win_top, seq, tty) tuples for every iTerm2 session.
+    # Stubbable for tests via TAB_CHROMA_ORDER_ENUM (a literal newline-separated
+    # block of the same TAB-delimited lines), mirroring the _pane_proc_list stub
+    # used by resolve_via_pane_env. Returns [] on any AppleScript failure so
+    # ordering stays best-effort and the renderer falls back to recency sort.
+    stub = os.environ.get("TAB_CHROMA_ORDER_ENUM")
+    if stub is not None:
+        raw = stub
+    else:
+        # ORDER_SCRIPT self-guards with `application "iTerm2" is running` so this
+        # never launches iTerm2 when it is closed (returns "" instead).
+        try:
+            res = subprocess.run(
+                ["/usr/bin/osascript", "-e", ORDER_SCRIPT],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=8)
+        except Exception:
+            return []
+        if res.returncode != 0:
+            return []
+        raw = res.stdout
+    rows = []
+    for line in raw.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 4:
+            continue
+        wl, wt, seq, tty = parts
+        tty = tty.strip()
+        if not tty:
+            continue
+        try:
+            rows.append((int(wl), int(wt), int(seq), tty))
+        except ValueError:
+            continue
+    return rows
+
 try:
     con.execute("PRAGMA busy_timeout=1000")
     if sub == "clear":
@@ -1052,6 +1126,56 @@ try:
                 n += 1
         con.commit()
         print(f"Pruned {n} dead session(s).")
+    elif sub == "order":
+        # Phase 5: positional ordering. Walk iTerm2 in on-screen order and stamp
+        # display_order onto matching rows so the renderer can lay lights out
+        # left-to-right instead of by severity/recency. Off the hook path and
+        # best-effort; writes ONLY changed rows so an unchanged layout causes no
+        # mtime churn (and thus no spurious re-render in the watching native app).
+        if not has_column("display_order"):
+            try:
+                con.execute("ALTER TABLE sessions ADD COLUMN display_order INTEGER")
+                con.commit()
+            except sqlite3.OperationalError:
+                pass
+        enum = enumerate_order()
+        if not enum:
+            # AppleScript failed / not iTerm2 / no windows: leave display_order
+            # untouched rather than clobbering a good layout on a transient error.
+            print("order: no iTerm2 enumeration; left unchanged.")
+            sys.exit(0)
+        # Sort by on-screen window position (left, then top), then in-window
+        # emission order; assign a strictly increasing rank. First occurrence of
+        # a tty wins — splits/tmux collapse several sessions onto one tty (same
+        # limitation as focus), so they share a single light and rank.
+        order_of = {}
+        rank = 0
+        for _wl, _wt, _seq, tty in sorted(enum):
+            rank += 1
+            order_of.setdefault(tty, rank)
+        if not order_of:
+            print("order: no ttys to rank; left unchanged.")
+            sys.exit(0)
+        changed = 0
+        # Stamp present ttys. `display_order IS NOT ?` is NULL-safe, so a row that
+        # already holds the target rank (or any unchanged row) is skipped.
+        for tty, dorder in order_of.items():
+            changed += con.execute(
+                "UPDATE sessions SET display_order=? "
+                "WHERE tty_device=? AND display_order IS NOT ?",
+                (dorder, tty, dorder)).rowcount
+        # Clear stamps on rows whose tty is no longer on screen (only those that
+        # currently carry one, so this is also a no-op when nothing moved).
+        present = list(order_of.keys())
+        placeholders = ",".join("?" for _ in present)
+        changed += con.execute(
+            "UPDATE sessions SET display_order=NULL "
+            "WHERE display_order IS NOT NULL "
+            f"AND tty_device NOT IN ({placeholders})",
+            present).rowcount
+        if changed:
+            con.commit()
+        print(f"order: {len(order_of)} tty(s) ranked, {changed} row(s) updated.")
     elif sub == "focus":
         if not args:
             print("usage: tab-chroma sessions focus <session_key>", file=sys.stderr)
@@ -1062,15 +1186,21 @@ try:
             sys.exit(1)
         sys.exit(focus_iterm(row))
     else:
+        do_sel = "display_order" if has_column("display_order") else "NULL AS display_order"
         rows = con.execute(
-            "SELECT session_key, agent, state, label, cwd, updated_at FROM sessions "
-            "WHERE expires_at IS NULL OR expires_at >= ? "
-            "ORDER BY updated_at DESC", (now,)).fetchall()
+            f"SELECT session_key, agent, state, label, cwd, updated_at, {do_sel} FROM sessions "
+            "WHERE expires_at IS NULL OR expires_at >= ?", (now,)).fetchall()
         if not rows:
             print("No active sessions.")
             sys.exit(0)
+        # Positional order (Phase 5) when EVERY shown row carries one; otherwise
+        # fall back to recency, so a half-populated order never scrambles output.
+        if all(r["display_order"] is not None for r in rows):
+            rows = sorted(rows, key=lambda r: r["display_order"])
+        else:
+            rows = sorted(rows, key=lambda r: -(r["updated_at"] or now))
         print(f"{'KEY':<45} {'AGENT':<7} {'STATE':<10} {'LABEL':<18} {'AGE':<6} CWD")
-        for key, agent, state, label, cwd, upd in rows:
+        for key, agent, state, label, cwd, upd, _do in rows:
             age = now - (upd or now)
             age_s = f"{age}s" if age < 60 else (f"{age//60}m" if age < 3600 else f"{age//3600}h")
             print(f"{key:<45} {agent:<7} {state:<10} {(label or ''):<18} {age_s:<6} {cwd or ''}")
@@ -1083,7 +1213,7 @@ PYEOF
       ;;
     *)
       echo "unknown sessions subcommand: $sub" >&2
-      echo "usage: tab-chroma sessions [list|focus <key>|prune|clear|path]" >&2
+      echo "usage: tab-chroma sessions [list|focus <key>|prune|order|clear|path]" >&2
       return 1
       ;;
   esac
@@ -1485,6 +1615,8 @@ try:
                     con.execute("ALTER TABLE sessions ADD COLUMN session_pid INTEGER")
                 if "pid_start" not in columns:
                     con.execute("ALTER TABLE sessions ADD COLUMN pid_start TEXT")
+                if "display_order" not in columns:
+                    con.execute("ALTER TABLE sessions ADD COLUMN display_order INTEGER")
             except Exception:
                 pass
             con.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at)")

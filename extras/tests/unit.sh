@@ -282,6 +282,27 @@ case_pane_env_anchors_only_to_own_agent() (
   [ "$TTY_DEVICE" = "/dev/null" ] && [ "$TTY_PID" = "4242" ] || exit 1
 )
 
+# Phase 5 `sessions order`: stub the iTerm2 enumeration via TAB_CHROMA_ORDER_ENUM
+# (the same stubbing trick as _pane_proc_list) and assert display_order is stamped
+# by ON-SCREEN window position, not enumeration order, and cleared for ttys that
+# vanish from the layout. The registry is seeded DIRECTLY via sqlite (not real
+# hooks) so the result does not depend on the ambient pane's tty/pid resolution
+# and runs deterministically in CI.
+case_sessions_order_assigns_display_order() {
+  local data oa ob ogone enum
+  data="$(fresh_data)"
+  sqlite_expr "$data" '[con.execute("CREATE TABLE sessions (session_key TEXT PRIMARY KEY, tty_device TEXT, updated_at INTEGER, expires_at INTEGER, display_order INTEGER)"), con.execute("INSERT INTO sessions VALUES (?,?,?,?,?)", ("claude:sa","/dev/ttysA",100,None,None)), con.execute("INSERT INTO sessions VALUES (?,?,?,?,?)", ("codex:sb","/dev/ttysB",100,None,None)), con.execute("INSERT INTO sessions VALUES (?,?,?,?,?)", ("codex:sc","/dev/ttysGONE",100,None,9)), con.commit()]' >/dev/null
+  # Window x=300 holds ttysB first (seq 0); window x=20 holds ttysA (seq 1). On
+  # screen x=20 is left of x=300, so ttysA must rank 1 and ttysB rank 2 even
+  # though ttysB was emitted first. ttysGONE is absent -> its stale order clears.
+  enum=$'300\t0\t0\t/dev/ttysB\n20\t0\t1\t/dev/ttysA'
+  TAB_CHROMA_ORDER_ENUM="$enum" run_tc "$data" sessions order >/dev/null || return 1
+  oa="$(sqlite_expr "$data" 'con.execute("select display_order from sessions where session_key=?", ("claude:sa",)).fetchone()[0]')"
+  ob="$(sqlite_expr "$data" 'con.execute("select display_order from sessions where session_key=?", ("codex:sb",)).fetchone()[0]')"
+  ogone="$(sqlite_expr "$data" 'con.execute("select display_order from sessions where session_key=?", ("codex:sc",)).fetchone()[0]')"
+  [[ "$oa" == "1" && "$ob" == "2" && "$ogone" == "None" ]]
+}
+
 check "status creates default config" case_status_creates_config
 check "theme use persists active theme" case_theme_use_persists
 check "feature toggle updates config" case_feature_toggle_updates_config
@@ -298,6 +319,7 @@ check "pane-env fallback ignores unknown session id" case_pane_env_bogus_sid_no_
 check "pane-env fallback no-ops on empty session id" case_pane_env_empty_sid_returns_skip
 check "pane-env fallback resolves the real pane tty" case_pane_env_resolves_real_pane
 check "pane-env fallback anchors pid only to own agent" case_pane_env_anchors_only_to_own_agent
+check "sessions order stamps display_order by window position" case_sessions_order_assigns_display_order
 check "native app self-test" case_native_app_self_test
 
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
