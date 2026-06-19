@@ -1,5 +1,10 @@
 # TabChroma Session Lights (SwiftBar / xbar)
 
+> **Note:** the native menu-bar app in [`../../native/`](../../native/) is now the
+> primary session-lights UI (no plugin host, event-driven, and it orders lights
+> to match your iTerm2 tab layout). This SwiftBar/xbar plugin is the secondary/
+> legacy option — use it only if you already run SwiftBar/xbar and prefer it.
+
 A menu-bar plugin that shows **one status light per active Claude Code / Codex
 session**, read from the TabChroma shared session registry.
 

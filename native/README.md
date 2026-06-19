@@ -81,7 +81,7 @@ cat /tmp/tabchroma-lights.log /tmp/tabchroma-lights.err
 |---|---|---|
 | `TAB_CHROMA_REGISTRY_DB` | `~/Library/Application Support/TabChroma/sessions.sqlite3` | Registry path. |
 | `TAB_CHROMA_LIGHTS_COLLAPSE` | `8` | Collapse the bar to grouped counts past this many sessions (`0` disables). |
-| `TAB_CHROMA_LIGHTS_AGENT_PREFIX` | off | Prefix each light with its agent letter (`C🔵 X🟢`); collapsed counts then group by agent+state. Accepts `1`/`true`/`yes`. Useful for mixed Claude+Codex setups. |
+| `TAB_CHROMA_LIGHTS_AGENT_PREFIX` | off | Prefix each light with its agent letter (`C🔵 X🟢`); collapsed counts then group by agent+state. Accepts `1`/`true`/`yes`/`on` (case-insensitive). Useful for mixed Claude+Codex setups. This is the *default*; the **"Agent letters (C/X)" dropdown toggle** overrides it at runtime (persisted in `UserDefaults`). |
 | `TAB_CHROMA_BIN` | auto-detected | Path to `tab-chroma.sh` for focus/prune (auto: `~/.claude/hooks/tab-chroma/tab-chroma.sh` or `PATH`). |
 
 ## How it works
@@ -95,13 +95,23 @@ cat /tmp/tabchroma-lights.log /tmp/tabchroma-lights.err
   simple timer is the mechanism.)
 - When idle (no sessions), the `○` is dimmed so it recedes into the menu bar.
 - The dropdown is rebuilt fresh each time it opens, so session ages stay current.
+- Two persisted dropdown toggles (`UserDefaults`): **Agent letters (C/X)** prefixes
+  each light and row with its agent letter (overrides `TAB_CHROMA_LIGHTS_AGENT_PREFIX`);
+  **Show tty & pid** appends `pid <pid>  <tty>` to each row.
 
 ## Status & next steps
 
-Lights render, update live, dim when idle, and click-to-focus works;
-auto-start at login is handled by `make install`. Optional agent-prefix mode
-(`C`/`X`) is available via `TAB_CHROMA_LIGHTS_AGENT_PREFIX`. Planned polish:
+Lights render, update live, dim when idle, collapse past a threshold, and
+**order left-to-right to match the iTerm2 tab layout** (Phase 5; the app runs
+`tab-chroma sessions order` on a debounced timer). Click-to-focus works and is
+confirmed interactively for both Claude and Codex sessions; auto-start at login
+is handled by `make install`. The agent-prefix mode (`C`/`X`) is available via
+`TAB_CHROMA_LIGHTS_AGENT_PREFIX`.
+
+The `C`/`X` agent prefix is also a persisted dropdown toggle ("Agent letters
+(C/X)"), not only an env var. Planned polish (see the Roadmap in
+`docs/design/session-registry-lights.md`):
 
 - Wrap in a minimal `.app` bundle + a Login Item (nicer than the raw LaunchAgent).
-- Per-window ordering — sort lights left-to-right to match iTerm2 tab order
-  (Phase 5 in `docs/design/session-registry-lights.md`).
+- Harden left-to-right ordering across **multiple displays / Spaces** (window
+  `bounds` stability).
