@@ -21,7 +21,7 @@ iTerm2 visual feedback plugin for [Claude Code](https://claude.ai/code) and [Ope
 > that session's pane. See [Session lights](#session-lights-menu-bar).
 
 <p align="center">
-  <img src="docs/assets/lights-menubar.png" alt="TabChroma Lights menu-bar app" />
+  <img src="docs/assets/lights-menubar.gif" alt="TabChroma Lights menu-bar app" />
 </p>
 
 ## Requirements
