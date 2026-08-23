@@ -262,9 +262,10 @@ TESTING:
 
 SESSIONS:
   sessions list         Show active agent sessions in the shared registry
-  sessions focus <key>  Raise iTerm2 and focus the session
+  sessions focus <key>  Raise iTerm2 and focus the session (herdr-aware)
   sessions prune        Remove sessions whose process is gone
-  sessions order        Renumber lights left-to-right to match iTerm2 tabs
+  sessions order        Renumber lights left-to-right to match iTerm2 tabs,
+                        expanding herdr's pane into its own agent order
   sessions clear        Remove all sessions
   sessions path         Print the registry database path
 
@@ -859,7 +860,7 @@ cmd_sessions() {
       ;;
     list|prune|clear|focus|order)
       TAB_CHROMA_REGISTRY_DB="$REGISTRY_DB" python3 - "$sub" "$@" << 'PYEOF'
-import os, subprocess, sys, time
+import json, os, shutil, subprocess, sys, time
 sub = sys.argv[1]
 args = sys.argv[2:]
 db = os.environ.get("TAB_CHROMA_REGISTRY_DB", "")
@@ -941,26 +942,138 @@ def notify(text):
     except Exception:
         pass
 
-def focus_iterm(row):
-    # Match on tty_device only. iTerm2's AppleScript `id of s` is a different
-    # GUID from `ITERM_SESSION_ID`, so the stored `terminal` cannot be matched
-    # this way; the resolved tty path (e.g. /dev/ttys003) is the reliable key
-    # and also pins the exact pane within a split.
-    tty = (row["tty_device"] or "").strip()
+# ── herdr bridge ─────────────────────────────────────────────────────────────
+# Under herdr, every agent pane is a PTY owned by the herdr *server*, so its
+# tty is not one of iTerm2's sessions: the AppleScript walk below can never
+# find it, and `display_order` never gets stamped. herdr does publish the
+# agent session id it detected for each pane, and that is the very same UUID
+# TabChroma already keys its rows on, so the two sides join on
+# `<agent>:<session_id>` with no extra bookkeeping. Joining live (rather than
+# storing a pane id at hook time) keeps the mapping correct across pane moves,
+# which renumber pane ids.
+HERDR_BIN = os.environ.get("TAB_CHROMA_HERDR_BIN") or shutil.which("herdr") \
+    or os.path.expanduser("~/.local/bin/herdr")
+
+_herdr_cache = {}
+
+def herdr_snapshot():
+    # None whenever herdr is absent, not running, or slow — every caller then
+    # falls back to the plain iTerm2 behavior.
+    if "snap" in _herdr_cache:
+        return _herdr_cache["snap"]
+    snap = None
+    stub = os.environ.get("TAB_CHROMA_HERDR_SNAPSHOT")
+    raw = None
+    if stub is not None:
+        raw = stub
+    elif HERDR_BIN and os.path.exists(HERDR_BIN):
+        try:
+            raw = subprocess.run(
+                [HERDR_BIN, "api", "snapshot"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, timeout=5).stdout
+        except Exception:
+            raw = None
+    if raw:
+        try:
+            snap = (json.loads(raw).get("result") or {}).get("snapshot")
+        except Exception:
+            snap = None
+    _herdr_cache["snap"] = snap
+    return snap
+
+def herdr_agents():
+    # (session_key -> pane_id, [session_key...]) with the list in herdr's own
+    # on-screen order: workspace, then tab, then pane within the tab layout.
+    # Anything the snapshot does not rank sorts last rather than to the front.
+    snap = herdr_snapshot()
+    if not snap:
+        return {}, []
+    LAST = 1 << 30
+    ws_rank = {w.get("workspace_id"): i
+               for i, w in enumerate(snap.get("workspaces") or [])}
+    tab_rank = {t.get("tab_id"): i for i, t in enumerate(snap.get("tabs") or [])}
+    pane_rank = {}
+    for layout in snap.get("layouts") or []:
+        for i, pane in enumerate(layout.get("panes") or []):
+            pane_rank[pane.get("pane_id")] = i
+    rows = []
+    for a in snap.get("agents") or []:
+        agent = a.get("agent")
+        sess = (a.get("agent_session") or {}).get("value")
+        if not agent or not sess:
+            continue
+        rows.append((
+            ws_rank.get(a.get("workspace_id"), LAST),
+            tab_rank.get(a.get("tab_id"), LAST),
+            pane_rank.get(a.get("pane_id"), LAST),
+            f"{agent}:{sess}",
+            a.get("pane_id"),
+        ))
+    rows.sort()
+    return ({key: pane for _, _, _, key, pane in rows},
+            [key for _, _, _, key, _ in rows])
+
+def herdr_client_ttys():
+    # ttys of herdr *client* processes — the iTerm2 panes herdr is drawn in.
+    # The server is excluded for free: it runs detached, so it has no tty.
+    stub = os.environ.get("TAB_CHROMA_HERDR_CLIENT_PS")
+    if stub is not None:
+        out = stub
+    else:
+        try:
+            out = subprocess.run(
+                ["/bin/ps", "-A", "-o", "pid=,tty=,comm="],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, timeout=5).stdout
+        except Exception:
+            return []
+    ttys = []
+    for line in out.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) != 3:
+            continue
+        _pid, tty, comm = parts
+        if tty in ("??", "-", "") or os.path.basename(comm.strip()) != "herdr":
+            continue
+        dev = "/dev/" + tty
+        if dev not in ttys:
+            ttys.append(dev)
+    return ttys
+
+def focus_herdr(row, pane_id):
+    # Two steps, in this order: raise the iTerm2 pane the herdr client is drawn
+    # in, then move herdr's own focus inside it. Focusing the herdr pane first
+    # would leave the right pane selected behind an unraised window.
     label = row["label"] or row["cwd"] or row["session_key"]
-    if not tty:
-        msg = f"No terminal recorded yet for {label} — it becomes focusable after its next activity."
+    for tty in herdr_client_ttys():
+        if select_iterm_tty(tty)[0]:
+            break
+    try:
+        res = subprocess.run(
+            [HERDR_BIN, "agent", "focus", pane_id],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+    except Exception as e:
+        msg = f"Couldn't ask herdr to focus {label}: {e}"
         notify(msg)
         print(msg, file=sys.stderr)
-        subprocess.run(["/usr/bin/open", "-a", "iTerm"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return 1
-    # Fetch each tab's session ttys in ONE Apple Event (`tty of sessions of t`)
-    # rather than one round-trip per session (`tty of s`). On a busy machine the
-    # per-session form could blow past the timeout — its cost scales with the
-    # total session count (every split pane), while the bulk form scales with the
-    # tab count and is ~2x faster in practice. The list returned is parallel to
-    # `sessions of t`, so the matching index resolves the session to select.
-    script = r'''
+    if res.returncode == 0:
+        print(f"Focused {label} (herdr pane {pane_id})")
+        return 0
+    err = (res.stderr or res.stdout or "").strip()
+    msg = f"herdr could not focus {label} ({pane_id}): {err or 'unknown error'}"
+    notify(msg)
+    print(msg, file=sys.stderr)
+    return 1
+
+# Fetch each tab's session ttys in ONE Apple Event (`tty of sessions of t`)
+# rather than one round-trip per session (`tty of s`). On a busy machine the
+# per-session form could blow past the timeout — its cost scales with the
+# total session count (every split pane), while the bulk form scales with the
+# tab count and is ~2x faster in practice. The list returned is parallel to
+# `sessions of t`, so the matching index resolves the session to select.
+SELECT_TTY_SCRIPT = r'''
 on run argv
   set targetTty to item 1 of argv
   tell application "iTerm2"
@@ -988,9 +1101,14 @@ on run argv
   return "not-found"
 end run
 '''
+
+def select_iterm_tty(tty):
+    # (ok, error_text). Raises and selects the iTerm2 session owning `tty`.
+    # Shared by the plain path and the herdr path, which uses it to surface the
+    # window the herdr client is drawn in.
     try:
         result = subprocess.run(
-            ["/usr/bin/osascript", "-e", script, tty],
+            ["/usr/bin/osascript", "-e", SELECT_TTY_SCRIPT, tty],
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -1000,25 +1118,38 @@ end run
             timeout=10,
         )
     except Exception as e:
-        msg = f"Couldn't run osascript to focus {label}: {e}"
+        return False, f"osascript failed: {e}"
+    if result.returncode == 0 and result.stdout.strip() == "focused":
+        return True, ""
+    return False, (result.stderr or "").strip() or result.stdout.strip()
+
+def focus_iterm(row):
+    # Match on tty_device only. iTerm2's AppleScript `id of s` is a different
+    # GUID from `ITERM_SESSION_ID`, so the stored `terminal` cannot be matched
+    # this way; the resolved tty path (e.g. /dev/ttys003) is the reliable key
+    # and also pins the exact pane within a split.
+    tty = (row["tty_device"] or "").strip()
+    label = row["label"] or row["cwd"] or row["session_key"]
+    if not tty:
+        msg = f"No terminal recorded yet for {label} — it becomes focusable after its next activity."
         notify(msg)
         print(msg, file=sys.stderr)
         subprocess.run(["/usr/bin/open", "-a", "iTerm"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return 1
-    if result.returncode == 0 and result.stdout.strip() == "focused":
+    ok, err = select_iterm_tty(tty)
+    if ok:
         print(f"Focused {label}")
         return 0
     # Loud failure: a notification (so a background SwiftBar click isn't silent)
     # plus stderr, with a TCC-specific, actionable hint when iTerm control is
     # denied — the common first-run case.
-    err = (result.stderr or "").strip()
     low = err.lower()
-    if result.returncode != 0 and ("-1743" in err or "not author" in low
-                                   or "not allowed" in low or "assistive" in low):
+    if err == "not-found":
+        msg = f"Couldn't find {label}'s tab ({tty}) — it may have been closed."
+    elif ("-1743" in err or "not author" in low
+          or "not allowed" in low or "assistive" in low):
         msg = ("iTerm control is blocked. Allow it under System Settings > Privacy "
                "& Security > Automation > SwiftBar > iTerm, then click the session again.")
-    elif result.stdout.strip() == "not-found":
-        msg = f"Couldn't find {label}'s tab ({tty}) — it may have been closed."
     else:
         msg = f"Couldn't focus {label} ({err or 'unknown error'})."
     notify(msg)
@@ -1148,12 +1279,37 @@ try:
         # emission order; assign a strictly increasing rank. First occurrence of
         # a tty wins — splits/tmux collapse several sessions onto one tty (same
         # limitation as focus), so they share a single light and rank.
+        #
+        # herdr draws every agent it hosts inside ONE iTerm2 pane, so that
+        # pane's single slot stands in for all of them. Expand it in place and
+        # the lights still read left-to-right across iTerm2 tabs and herdr's own
+        # tabs as one line. A second client attached to the same server shows
+        # the same sessions again, so only the first slot expands.
+        _, herdr_keys = herdr_agents()
+        client_ttys = set(herdr_client_ttys()) if herdr_keys else set()
         order_of = {}
+        key_order = {}
         rank = 0
+        expanded = False
         for _wl, _wt, _seq, tty in sorted(enum):
-            rank += 1
-            order_of.setdefault(tty, rank)
-        if not order_of:
+            if tty in client_ttys:
+                if not expanded:
+                    expanded = True
+                    for key in herdr_keys:
+                        rank += 1
+                        key_order[key] = rank
+                continue
+            if tty not in order_of:
+                rank += 1
+                order_of[tty] = rank
+        if herdr_keys and not expanded:
+            # herdr is up but no client is drawn in an iTerm2 pane (detached
+            # server, or a client in another terminal). Rank its sessions after
+            # everything on screen rather than dropping them from the line.
+            for key in herdr_keys:
+                rank += 1
+                key_order[key] = rank
+        if not order_of and not key_order:
             print("order: no ttys to rank; left unchanged.")
             sys.exit(0)
         changed = 0
@@ -1164,18 +1320,29 @@ try:
                 "UPDATE sessions SET display_order=? "
                 "WHERE tty_device=? AND display_order IS NOT ?",
                 (dorder, tty, dorder)).rowcount
-        # Clear stamps on rows whose tty is no longer on screen (only those that
-        # currently carry one, so this is also a no-op when nothing moved).
-        present = list(order_of.keys())
-        placeholders = ",".join("?" for _ in present)
+        for key, dorder in key_order.items():
+            changed += con.execute(
+                "UPDATE sessions SET display_order=? "
+                "WHERE session_key=? AND display_order IS NOT ?",
+                (dorder, key, dorder)).rowcount
+        # Clear stamps on rows that are neither on screen nor hosted by herdr
+        # (only those that currently carry one, so this is a no-op when nothing
+        # moved). COALESCE keeps a NULL column from swallowing the NOT IN, and
+        # the '' sentinel keeps an empty list from matching anything.
+        present_ttys = list(order_of.keys())
+        present_keys = list(key_order.keys())
+        tty_ph = ",".join("?" for _ in present_ttys) or "''"
+        key_ph = ",".join("?" for _ in present_keys) or "''"
         changed += con.execute(
             "UPDATE sessions SET display_order=NULL "
             "WHERE display_order IS NOT NULL "
-            f"AND tty_device NOT IN ({placeholders})",
-            present).rowcount
+            f"AND COALESCE(tty_device,'') NOT IN ({tty_ph}) "
+            f"AND COALESCE(session_key,'') NOT IN ({key_ph})",
+            present_ttys + present_keys).rowcount
         if changed:
             con.commit()
-        print(f"order: {len(order_of)} tty(s) ranked, {changed} row(s) updated.")
+        print(f"order: {len(order_of)} tty(s) + {len(key_order)} herdr pane(s) "
+              f"ranked, {changed} row(s) updated.")
     elif sub == "focus":
         if not args:
             print("usage: tab-chroma sessions focus <session_key>", file=sys.stderr)
@@ -1184,6 +1351,12 @@ try:
         if row is None:
             print(f"No session found for key: {args[0]}", file=sys.stderr)
             sys.exit(1)
+        # A herdr-hosted session has no iTerm2 tty of its own, so the
+        # AppleScript walk would always miss it. Ask herdr instead.
+        herdr_panes, _ = herdr_agents()
+        pane_id = herdr_panes.get(row["session_key"])
+        if pane_id:
+            sys.exit(focus_herdr(row, pane_id))
         sys.exit(focus_iterm(row))
     else:
         do_sel = "display_order" if has_column("display_order") else "NULL AS display_order"

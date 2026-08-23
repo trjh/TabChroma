@@ -296,11 +296,65 @@ case_sessions_order_assigns_display_order() {
   # screen x=20 is left of x=300, so ttysA must rank 1 and ttysB rank 2 even
   # though ttysB was emitted first. ttysGONE is absent -> its stale order clears.
   enum=$'300\t0\t0\t/dev/ttysB\n20\t0\t1\t/dev/ttysA'
-  TAB_CHROMA_ORDER_ENUM="$enum" run_tc "$data" sessions order >/dev/null || return 1
+  # Stub herdr out so a herdr server running on the dev machine cannot leak
+  # real panes into this fixture.
+  TAB_CHROMA_ORDER_ENUM="$enum" TAB_CHROMA_HERDR_SNAPSHOT='{}' \
+    TAB_CHROMA_HERDR_CLIENT_PS='' \
+    run_tc "$data" sessions order >/dev/null || return 1
   oa="$(sqlite_expr "$data" 'con.execute("select display_order from sessions where session_key=?", ("claude:sa",)).fetchone()[0]')"
   ob="$(sqlite_expr "$data" 'con.execute("select display_order from sessions where session_key=?", ("codex:sb",)).fetchone()[0]')"
   ogone="$(sqlite_expr "$data" 'con.execute("select display_order from sessions where session_key=?", ("codex:sc",)).fetchone()[0]')"
   [[ "$oa" == "1" && "$ob" == "2" && "$ogone" == "None" ]]
+}
+
+# herdr hosts every agent it runs inside ONE iTerm2 pane, so `sessions order`
+# has to expand that pane's single slot into one rank per herdr session, in
+# herdr's own workspace/tab/pane order, and leave the surrounding iTerm2 ranks
+# intact around it.
+HERDR_SNAP_FIXTURE='{"result":{"snapshot":{
+  "workspaces":[{"workspace_id":"w1"}],
+  "tabs":[{"tab_id":"w1:t1"},{"tab_id":"w1:t2"}],
+  "layouts":[{"tab_id":"w1:t1","panes":[{"pane_id":"w1:p1"}]},
+             {"tab_id":"w1:t2","panes":[{"pane_id":"w1:p2"},{"pane_id":"w1:p3"}]}],
+  "agents":[
+    {"agent":"codex","agent_session":{"value":"hz"},"workspace_id":"w1","tab_id":"w1:t2","pane_id":"w1:p3"},
+    {"agent":"claude","agent_session":{"value":"hx"},"workspace_id":"w1","tab_id":"w1:t1","pane_id":"w1:p1"},
+    {"agent":"claude","agent_session":{"value":"hy"},"workspace_id":"w1","tab_id":"w1:t2","pane_id":"w1:p2"}]
+}}}'
+
+case_sessions_order_expands_herdr_pane() {
+  local data ohx ohy ohz obefore oafter
+  data="$(fresh_data)"
+  sqlite_expr "$data" '[con.execute("CREATE TABLE sessions (session_key TEXT PRIMARY KEY, tty_device TEXT, updated_at INTEGER, expires_at INTEGER, display_order INTEGER)"), con.execute("INSERT INTO sessions VALUES (?,?,?,?,?)", ("claude:before","/dev/ttysA",100,None,None)), con.execute("INSERT INTO sessions VALUES (?,?,?,?,?)", ("claude:hx","/dev/ttysHERDR1",100,None,None)), con.execute("INSERT INTO sessions VALUES (?,?,?,?,?)", ("claude:hy","/dev/ttysHERDR2",100,None,None)), con.execute("INSERT INTO sessions VALUES (?,?,?,?,?)", ("codex:hz","/dev/ttysHERDR3",100,None,None)), con.execute("INSERT INTO sessions VALUES (?,?,?,?,?)", ("claude:after","/dev/ttysC",100,None,None)), con.commit()]' >/dev/null
+  # On screen: ttysA, then the pane herdr is drawn in (ttysH), then ttysC.
+  local enum=$'10\t0\t0\t/dev/ttysA\n20\t0\t1\t/dev/ttysH\n30\t0\t2\t/dev/ttysC'
+  TAB_CHROMA_ORDER_ENUM="$enum" \
+    TAB_CHROMA_HERDR_SNAPSHOT="$HERDR_SNAP_FIXTURE" \
+    TAB_CHROMA_HERDR_CLIENT_PS=$'999 ttysH herdr' \
+    run_tc "$data" sessions order >/dev/null || return 1
+  obefore="$(sqlite_expr "$data" 'con.execute("select display_order from sessions where session_key=?", ("claude:before",)).fetchone()[0]')"
+  ohx="$(sqlite_expr "$data" 'con.execute("select display_order from sessions where session_key=?", ("claude:hx",)).fetchone()[0]')"
+  ohy="$(sqlite_expr "$data" 'con.execute("select display_order from sessions where session_key=?", ("claude:hy",)).fetchone()[0]')"
+  ohz="$(sqlite_expr "$data" 'con.execute("select display_order from sessions where session_key=?", ("codex:hz",)).fetchone()[0]')"
+  oafter="$(sqlite_expr "$data" 'con.execute("select display_order from sessions where session_key=?", ("claude:after",)).fetchone()[0]')"
+  # ttysA=1; herdr expands to 2,3,4 in workspace/tab/pane order (hx,hy,hz)
+  # regardless of the order the snapshot listed its agents; ttysC follows at 5.
+  [[ "$obefore" == "1" && "$ohx" == "2" && "$ohy" == "3" && "$ohz" == "4" && "$oafter" == "5" ]]
+}
+
+# A herdr server with no client drawn in an iTerm2 pane must still rank its
+# sessions -- after everything on screen -- rather than dropping them.
+case_sessions_order_ranks_herdr_without_visible_client() {
+  local data ohx oa
+  data="$(fresh_data)"
+  sqlite_expr "$data" '[con.execute("CREATE TABLE sessions (session_key TEXT PRIMARY KEY, tty_device TEXT, updated_at INTEGER, expires_at INTEGER, display_order INTEGER)"), con.execute("INSERT INTO sessions VALUES (?,?,?,?,?)", ("claude:before","/dev/ttysA",100,None,None)), con.execute("INSERT INTO sessions VALUES (?,?,?,?,?)", ("claude:hx","/dev/ttysHERDR1",100,None,None)), con.commit()]' >/dev/null
+  TAB_CHROMA_ORDER_ENUM=$'10\t0\t0\t/dev/ttysA' \
+    TAB_CHROMA_HERDR_SNAPSHOT="$HERDR_SNAP_FIXTURE" \
+    TAB_CHROMA_HERDR_CLIENT_PS='' \
+    run_tc "$data" sessions order >/dev/null || return 1
+  oa="$(sqlite_expr "$data" 'con.execute("select display_order from sessions where session_key=?", ("claude:before",)).fetchone()[0]')"
+  ohx="$(sqlite_expr "$data" 'con.execute("select display_order from sessions where session_key=?", ("claude:hx",)).fetchone()[0]')"
+  [[ "$oa" == "1" && "$ohx" == "2" ]]
 }
 
 check "status creates default config" case_status_creates_config
@@ -320,6 +374,8 @@ check "pane-env fallback no-ops on empty session id" case_pane_env_empty_sid_ret
 check "pane-env fallback resolves the real pane tty" case_pane_env_resolves_real_pane
 check "pane-env fallback anchors pid only to own agent" case_pane_env_anchors_only_to_own_agent
 check "sessions order stamps display_order by window position" case_sessions_order_assigns_display_order
+check "sessions order expands the herdr pane in place" case_sessions_order_expands_herdr_pane
+check "sessions order ranks herdr with no visible client" case_sessions_order_ranks_herdr_without_visible_client
 check "native app self-test" case_native_app_self_test
 
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
