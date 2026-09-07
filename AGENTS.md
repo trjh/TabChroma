@@ -4,7 +4,7 @@ This file gives OpenAI Codex guidance for working in this repository.
 
 ## Project overview
 
-TabChroma is a small Bash + Python 3 terminal feedback plugin for agent CLIs. It changes iTerm2 tab color, badge, and title in response to lifecycle hook JSON from Claude Code and OpenAI Codex.
+TabChroma is a small Bash + Python 3 terminal feedback plugin for agent CLIs. It changes iTerm2 tab color, badge, and title in response to lifecycle hook JSON from Claude Code and OpenAI Codex. A pi extension (`extras/pi/tab-chroma.ts`) maps pi lifecycle events onto the same hook JSON so pi sessions light up too.
 
 It also keeps a shared SQLite **session registry** (`~/Library/Application Support/TabChroma/sessions.sqlite3`) and a **menu-bar "lights" UI** (one status light per active session; click to focus its iTerm2 pane, ordered to match the tab layout). CLI: `tab-chroma sessions <list|focus|order|prune|clear|path>`.
 
@@ -20,6 +20,7 @@ The core plugin has no package manager, dependency install, or build step. The o
 - `Formula/tab-chroma.rb` — Homebrew formula.
 - `native/` — native macOS menu-bar app ("TabChroma Lights"); the primary session-lights UI.
 - `extras/swiftbar/` — legacy SwiftBar/xbar session-lights plugin.
+- `extras/pi/` — pi extension that drives tab-chroma hooks from pi lifecycle events.
 - `docs/design/session-registry-lights.md` — session registry + lights design and roadmap.
 
 ## Validation
