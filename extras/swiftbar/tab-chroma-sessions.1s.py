@@ -37,7 +37,7 @@ except ValueError:
     COLLAPSE_THRESHOLD = 8
 
 # When enabled, prefix each menu-bar circle with the agent letter (C=Claude,
-# X=Codex), e.g. "C🔵 X🟢" instead of "🔵 🟢". Off by default — just circles.
+# X=Codex, P=pi), e.g. "C🔵 X🟢" instead of "🔵 🟢". Off by default — just circles.
 SHOW_AGENT_PREFIX = os.environ.get("TAB_CHROMA_LIGHTS_AGENT_PREFIX", "").strip().lower() in (
     "1", "true", "yes", "on",
 )
@@ -63,9 +63,9 @@ STATE_ORDER = {
     "ended": 5,
 }
 # Single-letter agent prefix shown next to each light.
-AGENT_PREFIX = {"claude": "C", "codex": "X"}
+AGENT_PREFIX = {"claude": "C", "codex": "X", "pi": "P"}
 # Keep agents in a stable order; unknown agents sort after the known ones.
-AGENT_ORDER = {"claude": 0, "codex": 1}
+AGENT_ORDER = {"claude": 0, "codex": 1, "pi": 2}
 
 
 def sanitize(text):

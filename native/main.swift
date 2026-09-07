@@ -12,7 +12,7 @@
 // Env overrides (same as the SwiftBar reader):
 //   TAB_CHROMA_REGISTRY_DB        registry path (default: Application Support)
 //   TAB_CHROMA_LIGHTS_COLLAPSE    collapse threshold (default 8; 0 disables)
-//   TAB_CHROMA_LIGHTS_AGENT_PREFIX  prefix each light with C/X (default off)
+//   TAB_CHROMA_LIGHTS_AGENT_PREFIX  prefix each light with C/X/P (default off)
 //   TAB_CHROMA_BIN                path to tab-chroma.sh for focus/prune actions
 
 import AppKit
@@ -26,9 +26,9 @@ let home = FileManager.default.homeDirectoryForCurrentUser.path
 let dbPath = environment["TAB_CHROMA_REGISTRY_DB"]
     ?? "\(home)/Library/Application Support/TabChroma/sessions.sqlite3"
 let collapseThreshold = Int(environment["TAB_CHROMA_LIGHTS_COLLAPSE"] ?? "8") ?? 8
-// Prefix each light with its agent letter (C=Claude, X=Codex). Off by default
+// Prefix each light with its agent letter (C=Claude, X=Codex, P=pi). Off by default
 // because it is redundant noise when every session is the same agent; turn it
-// on for mixed Claude+Codex setups. Accepts 1/true/yes/on (case-insensitive) —
+// on for mixed Claude+Codex+pi setups. Accepts 1/true/yes/on (case-insensitive) —
 // `on` matches tab-chroma's badge/title/color on|off vocabulary and the SwiftBar
 // reader, so the same value works everywhere.
 let agentPrefix = ["1", "true", "yes", "on"].contains(
@@ -41,14 +41,14 @@ let stateEmoji: [String: String] = [
 let stateRank: [String: Int] = [
     "permission": 0, "attention": 1, "working": 2, "done": 3, "starting": 4, "ended": 5,
 ]
-let agentRank: [String: Int] = ["claude": 0, "codex": 1]
-let agentLetter: [String: String] = ["claude": "C", "codex": "X"]
+let agentRank: [String: Int] = ["claude": 0, "codex": 1, "pi": 2]
+let agentLetter: [String: String] = ["claude": "C", "codex": "X", "pi": "P"]
 
 // Persisted (UserDefaults) toggle for the "Show tty & pid" dropdown item: append
 // each session's pid + tty inline. Off by default to keep the menu short.
 let showTtyPidKey = "ShowTtyPid"
 
-// Persisted (UserDefaults) toggle for the agent-letter prefix (C/X). The
+// Persisted (UserDefaults) toggle for the agent-letter prefix (C/X/P). The
 // `TAB_CHROMA_LIGHTS_AGENT_PREFIX` env var above is the *default*; once the user
 // flips the dropdown toggle, the stored choice wins. Read via
 // agentPrefixEnabled() everywhere so env-only setups keep working unchanged.
@@ -468,7 +468,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
-        let prefixToggle = NSMenuItem(title: "Agent letters (C/X)", action: #selector(toggleAgentPrefix), keyEquivalent: "")
+        let prefixToggle = NSMenuItem(title: "Agent letters (C/X/P)", action: #selector(toggleAgentPrefix), keyEquivalent: "")
         prefixToggle.target = self
         prefixToggle.state = agentPrefixEnabled() ? .on : .off
         menu.addItem(prefixToggle)

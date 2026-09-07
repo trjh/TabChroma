@@ -4,7 +4,7 @@
   <img src="docs/assets/presentation.gif" alt="TabChroma demo" />
 </p>
 
-iTerm2 visual feedback plugin for [Claude Code](https://claude.ai/code) and [OpenAI Codex](https://developers.openai.com/codex/). Changes your tab color, badge, and title based on what your coding agent is doing - so you can glance at any tab and know its state at a moment's notice.
+iTerm2 visual feedback plugin for [Claude Code](https://claude.ai/code), [OpenAI Codex](https://developers.openai.com/codex/), and [pi](https://pi.dev). Changes your tab color, badge, and title based on what your coding agent is doing - so you can glance at any tab and know its state at a moment's notice.
 
 | State | Default Color | Meaning |
 |-------|--------------|---------|
@@ -16,7 +16,7 @@ iTerm2 visual feedback plugin for [Claude Code](https://claude.ai/code) and [Ope
 
 > **Menu-bar session lights.** Beyond per-tab colors, TabChroma ships a native
 > macOS **menu-bar app** — "TabChroma Lights" — that shows one status light per
-> active Claude Code / Codex session across all your tabs and windows, ordered
+> active Claude Code / Codex / pi session across all your tabs and windows, ordered
 > left-to-right to match your iTerm2 layout. Click a light to jump straight to
 > that session's pane. See [Session lights](#session-lights-menu-bar).
 
@@ -27,7 +27,7 @@ iTerm2 visual feedback plugin for [Claude Code](https://claude.ai/code) and [Ope
 ## Requirements
 
 - macOS with [iTerm2](https://iterm2.com)
-- [Claude Code](https://claude.ai/code) CLI and/or [OpenAI Codex](https://developers.openai.com/codex/) CLI
+- [Claude Code](https://claude.ai/code) CLI and/or [OpenAI Codex](https://developers.openai.com/codex/) CLI (and/or [pi](https://pi.dev))
 - Python 3 (standard library only)
 - **zsh** - the installer writes the `tab-chroma` shell alias to `~/.zshrc`. bash and fish are not supported by the installer; add the following manually to your shell rc file:
 
@@ -203,7 +203,7 @@ Create a directory under `~/.claude/hooks/tab-chroma/themes/<name>/` with a `the
 
 ## Session lights (menu bar)
 
-Beyond per-tab colors, tab-chroma records every active Claude Code / Codex
+Beyond per-tab colors, tab-chroma records every active Claude Code / Codex / pi
 session in a shared local registry (`~/Library/Application Support/TabChroma/sessions.sqlite3`)
 so a menu-bar app can show **one status light per session** — handy when you
 have many agents running across tabs and windows:
@@ -219,8 +219,8 @@ The primary reader is a small native macOS menu-bar app in
 run it at login. It is event-driven (no plugin host), collapses to grouped counts
 past a threshold, orders lights left-to-right to match your iTerm2 tab layout, and
 **focuses a session's iTerm2 pane when you click its light**. By default each
-session is just a colored circle; flip on the agent letter (`C🔵 X🟢`, C=Claude,
-X=Codex) from the dropdown's **"Agent letters (C/X)"** toggle (or set
+session is just a colored circle; flip on the agent letter (`C🔵 X🟢 P🟠`, C=Claude,
+X=Codex, P=pi) from the dropdown's **"Agent letters (C/X/P)"** toggle (or set
 `TAB_CHROMA_LIGHTS_AGENT_PREFIX=on` as the default), and the dropdown always names
 the agent per session.
 
@@ -248,7 +248,7 @@ tab-chroma sessions clear    # drop all sessions
 tab-chroma sessions path     # print the registry database path
 ```
 
-The lights and CLI work for both Claude Code and Codex; because Codex has no
+The lights and CLI work for Claude Code, Codex, and pi; because Codex has no
 session-end hook, finished Codex sessions linger (green) until a fallback TTL
 expires.
 
@@ -279,6 +279,20 @@ tab-chroma registers itself as a Claude Code hook and a Codex lifecycle hook. Th
 Codex does not currently emit a `Notification` hook, so the orange `attention` state is Claude Code-only.
 
 Codex may ask you to trust newly discovered hooks the first time it sees them.
+
+### pi support
+
+pi does not use a static hooks file like Claude Code or Codex; it loads [extensions](https://pi.dev) from `~/.pi/agent/extensions/`. To drive tab-chroma from pi, drop the `tab-chroma.ts` extension (see `extras/pi/`) into that directory so pi maps its lifecycle events onto the same hook JSON the Claude/Codex hooks emit:
+
+- `session_start` → `SessionStart`
+- `session_shutdown` → `SessionEnd`
+- `agent_start` → `UserPromptSubmit` (working)
+- `tool_execution_start` → `PreToolUse` (working)
+- `tool_execution_end` → `PostToolUse` (working)
+- `agent_settled` → `Stop` (done)
+- `ui_prompt_start` → `Notification` (attention)
+
+The extension sets `TAB_CHROMA_AGENT=pi` so sessions show up in the registry and lights as a pi session (agent letter `P`).
 
 ### Debouncing
 
